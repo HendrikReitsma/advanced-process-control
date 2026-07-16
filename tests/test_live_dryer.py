@@ -4,6 +4,7 @@ from apc_lab.live_dryer import (
     INPUT_MAX,
     INPUT_MIN,
     MAX_MOVE,
+    MEASUREMENT_NOISE_STD,
     NOMINAL_INPUTS,
     NOMINAL_OUTPUTS,
     ConstrainedDryerMPC,
@@ -31,6 +32,49 @@ def test_process_has_input_delay():
     for _ in range(dryer.delay_steps + 1):
         later = dryer.step(changed, noisy=False)
     assert later[1] > NOMINAL_OUTPUTS[1]
+
+
+def test_measurement_noise_is_deterministic_and_does_not_change_plant_state():
+    first_dryer = LiveSprayDryer(seed=27)
+    second_dryer = LiveSprayDryer(seed=27)
+    moved_inputs = NOMINAL_INPUTS + np.array([5.0, 1.0, 5.0])
+
+    first_true = first_dryer.advance(moved_inputs)
+    second_true = second_dryer.advance(moved_inputs)
+    first_measurement = first_dryer.measure()
+    second_measurement = second_dryer.measure()
+
+    assert np.array_equal(first_true, second_true)
+    assert np.array_equal(first_measurement, second_measurement)
+    assert np.array_equal(first_dryer.true_outputs, first_true)
+    assert not np.array_equal(first_measurement, first_true)
+
+
+def test_disabled_noise_returns_true_state_without_consuming_random_sample():
+    first_dryer = LiveSprayDryer(seed=33)
+    second_dryer = LiveSprayDryer(seed=33)
+    first_dryer.advance(NOMINAL_INPUTS)
+    second_dryer.advance(NOMINAL_INPUTS)
+
+    disabled_measurement = first_dryer.measure(enabled=False)
+    measurement_after_disabled_sample = first_dryer.measure()
+    first_enabled_measurement = second_dryer.measure()
+
+    assert np.array_equal(disabled_measurement, first_dryer.true_outputs)
+    assert np.array_equal(measurement_after_disabled_sample, first_enabled_measurement)
+
+
+def test_noise_multiplier_scales_the_same_seeded_sensor_sample():
+    normal_dryer = LiveSprayDryer(seed=45)
+    high_dryer = LiveSprayDryer(seed=45)
+    normal_true = normal_dryer.advance(NOMINAL_INPUTS)
+    high_true = high_dryer.advance(NOMINAL_INPUTS)
+
+    normal_offset = normal_dryer.measure(multiplier=1.0) - normal_true
+    high_offset = high_dryer.measure(multiplier=2.0) - high_true
+
+    assert np.allclose(high_offset, 2.0 * normal_offset)
+    assert np.all(MEASUREMENT_NOISE_STD > 0)
 
 
 def test_multivariable_mpc_respects_move_and_input_limits():

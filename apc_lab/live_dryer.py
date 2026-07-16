@@ -28,6 +28,12 @@ OUTPUT_TAU = np.array([5.0, 3.0, 15.0, 8.0])
 INPUT_SCALE = INPUT_MAX - INPUT_MIN
 OUTPUT_SCALE = np.array([30.0, 2.5, 3.0, 0.050])
 
+# One-sigma sensor noise at the Normal setting, in OUTPUT_NAMES order:
+# 0.20 C exhaust temperature, 0.015 bar pressure, 0.040 moisture percentage
+# points, and 0.0005 kg water/kg dry air exhaust humidity.
+MEASUREMENT_NOISE_STD = np.array([0.20, 0.015, 0.040, 0.0005])
+NOISE_MULTIPLIERS = {"Low": 0.5, "Normal": 1.0, "High": 2.0}
+
 
 def steady_outputs(
     inputs: np.ndarray,
@@ -44,7 +50,7 @@ class LiveSprayDryer:
 
     dt: float = 1.0
     delay_steps: int = 3
-    outputs: np.ndarray = field(default_factory=lambda: NOMINAL_OUTPUTS.copy())
+    true_outputs: np.ndarray = field(default_factory=lambda: NOMINAL_OUTPUTS.copy())
     seed: int = 11
     _input_history: deque = field(init=False, repr=False)
     _rng: np.random.Generator = field(init=False, repr=False)
@@ -56,15 +62,33 @@ class LiveSprayDryer:
         )
         self._rng = np.random.default_rng(self.seed)
 
-    def step(self, inputs: np.ndarray, noisy: bool = True) -> np.ndarray:
+    def advance(self, inputs: np.ndarray) -> np.ndarray:
+        """Advance the noise-free plant state by one simulation interval."""
+
         inputs = np.clip(np.asarray(inputs, dtype=float), INPUT_MIN, INPUT_MAX)
         self._input_history.append(inputs.copy())
         target = steady_outputs(self._input_history[0])
-        self.outputs += self.dt / OUTPUT_TAU * (target - self.outputs)
-        if noisy:
-            noise_scale = np.array([0.12, 0.008, 0.025, 0.00035])
-            return self.outputs + self._rng.normal(0.0, noise_scale)
-        return self.outputs.copy()
+        self.true_outputs += self.dt / OUTPUT_TAU * (target - self.true_outputs)
+        return self.true_outputs.copy()
+
+    def measure(self, enabled: bool = True, multiplier: float = 1.0) -> np.ndarray:
+        """Sample sensors without modifying the underlying plant state."""
+
+        if not enabled or multiplier <= 0:
+            return self.true_outputs.copy()
+        noise = self._rng.normal(0.0, MEASUREMENT_NOISE_STD * multiplier)
+        return self.true_outputs + noise
+
+    def step(
+        self,
+        inputs: np.ndarray,
+        noisy: bool = True,
+        noise_multiplier: float = 1.0,
+    ) -> np.ndarray:
+        """Compatibility helper that advances the plant and samples sensors."""
+
+        self.advance(inputs)
+        return self.measure(enabled=noisy, multiplier=noise_multiplier)
 
 
 @dataclass

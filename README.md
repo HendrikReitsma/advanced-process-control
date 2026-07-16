@@ -57,6 +57,11 @@ the controller repeatedly predicts future behavior, optimizes one selected
 target/maximize/minimize objective, applies the first move, and solves again.
 Each input has an operating range, move limit, and enable/freeze switch.
 
+The live controller and trends receive configurable synthetic sensor
+measurements rather than the noise-free internal plant state. Noise can be
+disabled or set to Low, Normal, or High from the operator station; the seeded
+generator keeps simulation runs reproducible.
+
 The dashboard also exposes the gain-and-lag equations, parameter effects,
 predicted trajectories, active constraints, and a CSV workflow for fitting the
 controller model to synthetic or user-supplied data.
@@ -69,6 +74,7 @@ controller model to synthetic or user-supplied data.
 | `run_lab.py` | Runnable SISO learning sequence and static figures. |
 | `apc_lab/live_dryer.py` | Synthetic multivariable process and constrained MPC. |
 | `apc_lab/model_fitting.py` | Multivariable gain, time-constant, and delay fitting. |
+| `apc_lab/scada_ui.py` | Reusable retro SCADA styling and status helpers. |
 | `apc_lab/spray_dryer.py` | Introductory SISO process simulation. |
 | `apc_lab/pid.py` | PID implementation with anti-windup and limits. |
 | `apc_lab/identification.py` | SISO FOPDT model and step-response fitting. |
@@ -79,11 +85,16 @@ The live steady-state model has the form:
 
 ```text
 y_ss = y_nominal + K @ (u_delayed - u_nominal)
-y[k+1] = y[k] + (y_ss[k] - y[k]) / tau + measurement_noise
+y_true[k+1] = y_true[k] + (y_ss[k] - y_true[k]) / tau
+y_measured[k] = y_true[k] + sensor_noise[k]
 ```
 
 The dashboard displays the complete synthetic gain matrix and explains the
-direction and speed of each input/output effect.
+direction and speed of each input/output effect. At the Normal setting, the
+one-standard-deviation sensor noise is 0.20 C for exhaust temperature, 0.015
+bar for feed pressure, 0.040 percentage points for powder moisture, and 0.0005
+kg water/kg dry air for exhaust humidity. Low and High apply 0.5x and 2x these
+values.
 
 ## Installation
 
@@ -147,6 +158,8 @@ written to the repository by the application.
 - The process is a linear educational approximation, not a mass-and-energy
   balance or validated equipment model.
 - The multivariable model uses one common input delay and first-order dynamics.
+- Measurement noise is independent Gaussian sensor noise; it does not model
+  sensor bias, drift, filtering, or correlated plant disturbances.
 - The MPC supports one primary objective at a time.
 - Constraints and solver fallback behavior are suitable for demonstration, not
   safety-critical control.
