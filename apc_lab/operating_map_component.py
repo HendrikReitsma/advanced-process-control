@@ -52,7 +52,9 @@ def _register_operating_map():
     )
 
 
-_operating_map = _register_operating_map()
+# Register when Streamlit renders the map rather than while Python imports this
+# module. This keeps Cloud's hot-reload import path free of component side effects.
+_operating_map = None
 
 
 def prepare_operating_map_payload(
@@ -100,6 +102,8 @@ def render_operating_map(payload: dict[str, Any]) -> None:
         "height": _OPERATING_MAP_HEIGHT,
     }
     try:
+        if _operating_map is None:
+            _operating_map = _register_operating_map()
         _operating_map(**mount_args)
     except ValueError as exc:
         if "is not registered" not in str(exc):

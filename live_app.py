@@ -838,11 +838,16 @@ with st.sidebar:
     )
 
     render_sidebar_title("SENSOR INPUT")
+    noise_checkbox_args: dict[str, object] = {
+        "key": "noise_enabled",
+        "disabled": showcase.engaged,
+    }
+    noise_default = widget_default("noise_enabled", True)
+    if noise_default is not None:
+        noise_checkbox_args["value"] = bool(noise_default)
     noise_enabled = st.checkbox(
         "Measurement noise enabled",
-        value=bool(widget_default("noise_enabled", True)),
-        key="noise_enabled",
-        disabled=showcase.engaged,
+        **noise_checkbox_args,
     )
     noise_profile = st.selectbox(
         "Noise profile",
@@ -886,11 +891,16 @@ with st.sidebar:
     )
 
     render_sidebar_title("FEED SUPPLY")
+    automatic_tank_checkbox_args: dict[str, object] = {
+        "key": "automatic_tank_changes",
+        "disabled": showcase.engaged,
+    }
+    automatic_tank_default = widget_default("automatic_tank_changes", False)
+    if automatic_tank_default is not None:
+        automatic_tank_checkbox_args["value"] = bool(automatic_tank_default)
     automatic_tank_changes = st.checkbox(
         "Automatic tank changes",
-        value=False,
-        key="automatic_tank_changes",
-        disabled=showcase.engaged,
+        **automatic_tank_checkbox_args,
     )
     automatic_tank_interval = st.slider(
         "Automatic change interval (sim min)",
@@ -978,11 +988,16 @@ with st.sidebar:
         input_max = np.empty(3)
         max_move = np.empty(3)
         for i, name in enumerate(INPUT_NAMES):
+            input_enabled_checkbox_args: dict[str, object] = {
+                "key": f"enabled_{i}",
+                "disabled": showcase.engaged,
+            }
+            input_enabled_default = widget_default(f"enabled_{i}", True)
+            if input_enabled_default is not None:
+                input_enabled_checkbox_args["value"] = bool(input_enabled_default)
             input_enabled[i] = st.checkbox(
                 f"Allow APC to change {name}",
-                value=bool(widget_default(f"enabled_{i}", True)),
-                key=f"enabled_{i}",
-                disabled=showcase.engaged,
+                **input_enabled_checkbox_args,
             )
             selected = st.slider(
                 f"{name} operating range",

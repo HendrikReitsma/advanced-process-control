@@ -60,7 +60,9 @@ def _register_process_trends():
     )
 
 
-_process_trends = _register_process_trends()
+# Register when Streamlit renders the trends rather than while Python imports
+# this module. This avoids component-registry side effects during hot reloads.
+_process_trends = None
 
 
 def prepare_trend_payload(
@@ -116,6 +118,8 @@ def render_process_trends(payload: dict[str, Any]) -> None:
         "height": _PROCESS_TRENDS_HEIGHT,
     }
     try:
+        if _process_trends is None:
+            _process_trends = _register_process_trends()
         _process_trends(**mount_args)
     except ValueError as exc:
         # AppTest can replace Streamlit's runtime registry while retaining this
