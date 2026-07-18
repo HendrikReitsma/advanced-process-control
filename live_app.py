@@ -67,10 +67,23 @@ from apc_lab.scada_ui import (
     render_event_banner,
     render_message,
     render_section_title,
+    render_showcase_banner,
     render_sidebar_title,
     render_status_strip,
     render_title_bar,
     render_value_grid,
+)
+from apc_lab.showcase import (
+    ACTION_APC_CHALLENGE,
+    ACTION_APC_ENABLE,
+    ACTION_COMPLETE,
+    ACTION_HUMID_WEATHER,
+    ACTION_TANK_CHANGE,
+    SHOWCASE_SEED,
+    ShowcaseEvent,
+    ShowcasePhase,
+    ShowcaseState,
+    calculate_showcase_metrics,
 )
 
 st.set_page_config(page_title="Spray Dryer APC Station", layout="wide")
@@ -79,7 +92,7 @@ apply_scada_theme()
 DEFAULT_OUTPUT_MIN = np.array([75.0, 3.0, 3.0, 0.090])
 DEFAULT_OUTPUT_MAX = np.array([105.0, 5.5, 5.2, 0.145])
 CONTROLLER_VERSION = 5
-SIMULATION_STATE_VERSION = 7
+SIMULATION_STATE_VERSION = 8
 FEED_DRY_MATTER_HISTORY_NAME = "Feed dry matter"
 FEED_TANK_HISTORY_NAME = "Feed tank"
 INLET_HUMIDITY_HISTORY_NAME = "Inlet air humidity"
@@ -117,6 +130,10 @@ def initialize() -> None:
             "chart_needs_snapshot",
             "operating_map_last_sample_id",
             "operating_map_needs_snapshot",
+            "showcase",
+            "showcase_events",
+            "showcase_event_ids",
+            "control_mode",
         ):
             st.session_state.pop(key, None)
         st.session_state.simulation_state_version = SIMULATION_STATE_VERSION
@@ -134,6 +151,8 @@ def initialize() -> None:
         st.session_state.weather_manager = InletWeatherManager()
         st.session_state.weather_events = []
         st.session_state.last_weather_event = None
+        st.session_state.showcase = ShowcaseState()
+        st.session_state.showcase_events = []
         st.session_state.history = {
             "minute": [],
             **{
@@ -160,9 +179,12 @@ def initialize() -> None:
         st.session_state.chart_event_sequence = 0
         st.session_state.chart_event_ids = []
         st.session_state.weather_event_ids = []
+        st.session_state.showcase_event_ids = []
         st.session_state.chart_needs_snapshot = True
         st.session_state.operating_map_last_sample_id = -1
         st.session_state.operating_map_needs_snapshot = True
+    if "control_mode" not in st.session_state:
+        st.session_state.control_mode = st.session_state.get("mode", "Manual")
     if st.session_state.get("controller_version") != CONTROLLER_VERSION:
         st.session_state.controller = ConstrainedDryerMPC()
         st.session_state.controller_version = CONTROLLER_VERSION
@@ -197,6 +219,10 @@ def reset() -> None:
         "operating_map_last_sample_id",
         "operating_map_needs_snapshot",
         "weather_mode",
+        "showcase",
+        "showcase_events",
+        "showcase_event_ids",
+        "control_mode",
     ):
         st.session_state.pop(key, None)
     initialize()
@@ -229,8 +255,106 @@ def record_weather_event(event: WeatherEvent | None) -> None:
     st.session_state.weather_event_ids = st.session_state.weather_event_ids[-12:]
 
 
+def record_showcase_event(event: ShowcaseEvent) -> None:
+    """Retain one guided-scenario marker in the shared SCADA event sequence."""
+
+    st.session_state.chart_event_sequence += 1
+    st.session_state.showcase_events.append(event)
+    st.session_state.showcase_event_ids.append(st.session_state.chart_event_sequence)
+    st.session_state.showcase_events = st.session_state.showcase_events[-12:]
+    st.session_state.showcase_event_ids = st.session_state.showcase_event_ids[-12:]
+
+
 def toggle_running() -> None:
+    if st.session_state.showcase.complete:
+        return
     st.session_state.running = not st.session_state.running
+
+
+def _set_showcase_widget_defaults() -> None:
+    """Apply the known operator configuration used by the guided run."""
+
+    st.session_state.mode = "Manual"
+    st.session_state.control_mode = "Manual"
+    st.session_state.noise_enabled = True
+    st.session_state.noise_profile = "Normal"
+    st.session_state.simulation_minutes_per_tick = 1
+    st.session_state.weather_mode = "Constant"
+    st.session_state.automatic_tank_changes = False
+    st.session_state.automatic_tank_interval = 60
+    st.session_state.objective_parameter = "Exhaust air humidity"
+    st.session_state.objective_mode = "Target"
+    st.session_state.objective_target_output_3 = float(NOMINAL_OUTPUTS[3])
+    for index, value in enumerate(NOMINAL_INPUTS):
+        st.session_state[f"input_{index}"] = float(value)
+        st.session_state[f"enabled_{index}"] = True
+        st.session_state[f"input_constraint_{index}"] = (
+            float(INPUT_MIN[index]),
+            float(INPUT_MAX[index]),
+        )
+        st.session_state[f"max_move_{index}"] = float(MAX_MOVE[index])
+    for index in range(len(OUTPUT_NAMES)):
+        st.session_state[f"constraint_{index}"] = (
+            float(DEFAULT_OUTPUT_MIN[index]),
+            float(DEFAULT_OUTPUT_MAX[index]),
+        )
+
+
+def start_showcase() -> None:
+    """Start a clean deterministic guided run in this Streamlit session."""
+
+    reset()
+    _set_showcase_widget_defaults()
+    st.session_state.dryer = LiveSprayDryer(seed=SHOWCASE_SEED)
+    st.session_state.feed_tank_manager = FeedTankManager(seed=SHOWCASE_SEED + 1)
+    st.session_state.weather_manager = InletWeatherManager(seed=SHOWCASE_SEED + 2)
+    st.session_state.controller = ConstrainedDryerMPC()
+    st.session_state.controller_version = CONTROLLER_VERSION
+    st.session_state.inputs = NOMINAL_INPUTS.copy()
+    st.session_state.true_outputs = NOMINAL_OUTPUTS.copy()
+    st.session_state.measurements = NOMINAL_OUTPUTS.copy()
+    st.session_state.showcase.start()
+    record_showcase_event(
+        ShowcaseEvent(0, "SHOWCASE START", "Manual baseline at nominal inputs")
+    )
+    st.session_state.running = True
+
+
+def stop_showcase() -> None:
+    """Leave guided operation through the application's clean reset path."""
+
+    reset()
+    _set_showcase_widget_defaults()
+    st.session_state.running = False
+
+
+def apply_showcase_actions(actions: list[str], minute: int) -> None:
+    """Apply due guided actions through existing disturbance/control paths."""
+
+    tank_manager: FeedTankManager = st.session_state.feed_tank_manager
+    weather_manager: InletWeatherManager = st.session_state.weather_manager
+    for action in actions:
+        if action == ACTION_HUMID_WEATHER:
+            record_weather_event(weather_manager.trigger(minute))
+        elif action == ACTION_TANK_CHANGE:
+            record_tank_event(
+                tank_manager.change_to("Tank C", minute, "Showcase tank change")
+            )
+        elif action == ACTION_APC_ENABLE:
+            st.session_state.control_mode = "APC"
+            record_showcase_event(
+                ShowcaseEvent(minute, "APC ENABLED", "Controller takeover")
+            )
+        elif action == ACTION_APC_CHALLENGE:
+            record_tank_event(
+                tank_manager.change_to(
+                    "Tank A", minute, "APC challenge tank change"
+                )
+            )
+        elif action == ACTION_COMPLETE:
+            record_showcase_event(
+                ShowcaseEvent(minute, "SHOWCASE COMPLETE", "Guided run held")
+            )
 
 
 def change_selected_tank() -> None:
@@ -251,7 +375,7 @@ def trigger_humid_weather() -> None:
 
 
 @st.fragment
-def render_feed_tank_command() -> None:
+def render_feed_tank_command(disabled: bool = False) -> None:
     """Render the manual tank command without causing a full application rerun."""
 
     tank_manager: FeedTankManager = st.session_state.feed_tank_manager
@@ -264,11 +388,12 @@ def render_feed_tank_command() -> None:
         tank_names,
         index=next_tank_index,
         key="manual_tank",
+        disabled=disabled,
     )
     st.button(
         "CHANGE FEED TANK",
         width="stretch",
-        disabled=selected_tank == tank_manager.current_tank,
+        disabled=disabled or selected_tank == tank_manager.current_tank,
         type="primary",
         on_click=change_selected_tank,
     )
@@ -355,6 +480,18 @@ def chart_event_payloads() -> list[dict[str, object]]:
         for event_id, event in zip(
             st.session_state.weather_event_ids,
             st.session_state.weather_events,
+        )
+    )
+    events.extend(
+        {
+            "event_id": event_id,
+            "time": event.minute,
+            "type": event.event_type,
+            "label": event.event_type,
+        }
+        for event_id, event in zip(
+            st.session_state.showcase_event_ids,
+            st.session_state.showcase_events,
         )
     )
     return sorted(events, key=lambda event: int(event["event_id"]))
@@ -629,22 +766,69 @@ predictor**; the simulated plant remains unchanged so model mismatch is visible.
 initialize()
 tank_manager: FeedTankManager = st.session_state.feed_tank_manager
 weather_manager: InletWeatherManager = st.session_state.weather_manager
+showcase: ShowcaseState = st.session_state.showcase
 
 with st.sidebar:
     render_sidebar_title("OPERATOR STATION")
-    mode = st.radio("Control mode", ("Manual", "APC"), key="mode", horizontal=True)
+    render_sidebar_title("APC SHOWCASE")
+    if not showcase.engaged:
+        st.button(
+            "RUN APC SHOWCASE",
+            width="stretch",
+            type="primary",
+            on_click=start_showcase,
+        )
+    elif showcase.complete:
+        showcase_left, showcase_right = st.columns(2)
+        showcase_left.button(
+            "RUN AGAIN", width="stretch", on_click=start_showcase
+        )
+        showcase_right.button(
+            "EXIT SHOWCASE", width="stretch", on_click=stop_showcase
+        )
+    else:
+        st.button("STOP SHOWCASE", width="stretch", on_click=stop_showcase)
+        st.caption("Guided sequence active | HOLD remains available")
+
+    if showcase.engaged:
+        mode = "APC" if showcase.apc_enabled else "Manual"
+        st.radio(
+            "Control mode",
+            ("Manual", "APC"),
+            index=1 if mode == "APC" else 0,
+            key=f"showcase_mode_{showcase.phase.value}",
+            horizontal=True,
+            disabled=True,
+        )
+    else:
+        mode = st.radio(
+            "Control mode", ("Manual", "APC"), key="mode", horizontal=True
+        )
+        st.session_state.control_mode = mode
     left, right = st.columns(2)
     left.button(
         "RUN" if not st.session_state.running else "HOLD",
         width="stretch",
         on_click=toggle_running,
+        disabled=showcase.complete,
     )
-    right.button("RESET", width="stretch", on_click=reset)
+    right.button(
+        "RESET", width="stretch", on_click=reset, disabled=showcase.engaged
+    )
 
     render_sidebar_title("SENSOR INPUT")
-    noise_enabled = st.checkbox("Measurement noise enabled", value=True)
+    noise_enabled = st.checkbox(
+        "Measurement noise enabled",
+        value=True,
+        key="noise_enabled",
+        disabled=showcase.engaged,
+    )
     noise_profile = st.selectbox(
-        "Noise profile", tuple(NOISE_MULTIPLIERS), index=1, disabled=not noise_enabled
+        "Noise profile",
+        tuple(NOISE_MULTIPLIERS),
+        index=1,
+        key="noise_profile",
+        disabled=showcase.engaged or not noise_enabled,
     )
 
     render_sidebar_title("SIMULATION RATE")
@@ -652,6 +836,8 @@ with st.sidebar:
         "Simulated minutes per scan",
         (1, 2, 5),
         format_func=lambda minutes: f"{minutes} minute{'s' if minutes != 1 else ''}",
+        key="simulation_minutes_per_tick",
+        disabled=showcase.engaged,
     )
     st.session_state.dryer.configure_time_step(simulation_minutes_per_tick)
     st.session_state.controller.configure_time_step(simulation_minutes_per_tick)
@@ -661,6 +847,7 @@ with st.sidebar:
         "Inlet humidity mode",
         WEATHER_MODES,
         key="weather_mode",
+        disabled=showcase.engaged,
     )
     weather_manager.configure_mode(weather_mode, st.session_state.minute)
     st.session_state.dryer.set_inlet_humidity(weather_manager.inlet_humidity)
@@ -669,34 +856,49 @@ with st.sidebar:
         width="stretch",
         type="primary",
         on_click=trigger_humid_weather,
+        disabled=showcase.engaged,
     )
     st.caption(
         f"Manual event: +{HUMID_WEATHER_INCREASE:.4f} {INLET_HUMIDITY_UNIT}"
     )
 
     render_sidebar_title("FEED SUPPLY")
-    automatic_tank_changes = st.checkbox("Automatic tank changes", value=False)
+    automatic_tank_changes = st.checkbox(
+        "Automatic tank changes",
+        value=False,
+        key="automatic_tank_changes",
+        disabled=showcase.engaged,
+    )
     automatic_tank_interval = st.slider(
         "Automatic change interval (sim min)",
         30,
         120,
         60,
         5,
-        disabled=not automatic_tank_changes,
+        key="automatic_tank_interval",
+        disabled=showcase.engaged or not automatic_tank_changes,
     )
     tank_manager.configure_automatic(
         automatic_tank_changes,
         automatic_tank_interval,
         st.session_state.minute,
     )
-    render_feed_tank_command()
+    render_feed_tank_command(disabled=showcase.engaged)
 
     render_sidebar_title("OPTIMIZATION")
     objective_parameter = st.selectbox(
-        "Parameter", INPUT_NAMES + OUTPUT_NAMES, index=6
+        "Parameter",
+        INPUT_NAMES + OUTPUT_NAMES,
+        index=6,
+        key="objective_parameter",
+        disabled=showcase.engaged,
     )
     objective_mode = st.radio(
-        "Goal", ("Target", "Maximize", "Minimize"), horizontal=True
+        "Goal",
+        ("Target", "Maximize", "Minimize"),
+        key="objective_mode",
+        horizontal=True,
+        disabled=showcase.engaged,
     ).lower()
     if objective_parameter in INPUT_NAMES:
         objective_group = "input"
@@ -725,6 +927,7 @@ with st.sidebar:
             float(objective_default),
             float(objective_step),
             key=f"objective_target_{objective_group}_{objective_index}",
+            disabled=showcase.engaged,
         )
 
     with st.expander("Manual MV commands", expanded=mode == "Manual"):
@@ -736,6 +939,7 @@ with st.sidebar:
                     float(INPUT_MAX[i]),
                     float(NOMINAL_INPUTS[i]),
                     key=f"input_{i}",
+                    disabled=showcase.engaged,
                 )
                 for i in range(3)
             ]
@@ -748,7 +952,10 @@ with st.sidebar:
         max_move = np.empty(3)
         for i, name in enumerate(INPUT_NAMES):
             input_enabled[i] = st.checkbox(
-                f"Allow APC to change {name}", value=True, key=f"enabled_{i}"
+                f"Allow APC to change {name}",
+                value=True,
+                key=f"enabled_{i}",
+                disabled=showcase.engaged,
             )
             selected = st.slider(
                 f"{name} operating range",
@@ -756,6 +963,7 @@ with st.sidebar:
                 float(INPUT_MAX[i]),
                 (float(INPUT_MIN[i]), float(INPUT_MAX[i])),
                 key=f"input_constraint_{i}",
+                disabled=showcase.engaged,
             )
             input_min[i], input_max[i] = selected
             max_move[i] = st.slider(
@@ -764,6 +972,7 @@ with st.sidebar:
                 float(MAX_MOVE[i] * 3),
                 float(MAX_MOVE[i]),
                 key=f"max_move_{i}",
+                disabled=showcase.engaged,
             )
 
     with st.expander("CV constraints"):
@@ -783,6 +992,7 @@ with st.sidebar:
                 (float(DEFAULT_OUTPUT_MIN[i]), float(DEFAULT_OUTPUT_MAX[i])),
                 ranges[i][2],
                 key=f"constraint_{i}",
+                disabled=showcase.engaged,
             )
             output_min[i], output_max[i] = selected
 
@@ -798,7 +1008,12 @@ render_title_bar(
 @st.fragment(run_every=1.0 if st.session_state.running else None)
 def live_panel() -> None:
     if st.session_state.running:
-        if st.session_state.mode == "Manual":
+        event_minute = st.session_state.minute + simulation_minutes_per_tick
+        if showcase.engaged:
+            actions = showcase.advance(event_minute, running=True)
+            apply_showcase_actions(actions, event_minute)
+        effective_mode = st.session_state.control_mode
+        if effective_mode == "Manual":
             st.session_state.inputs = manual_inputs.copy()
         else:
             st.session_state.inputs = st.session_state.controller.move(
@@ -815,8 +1030,8 @@ def live_panel() -> None:
                 max_move * simulation_minutes_per_tick,
                 input_enabled,
             )
-        event_minute = st.session_state.minute + simulation_minutes_per_tick
-        record_tank_event(tank_manager.maybe_automatic_change(event_minute))
+        if not showcase.engaged:
+            record_tank_event(tank_manager.maybe_automatic_change(event_minute))
         record_weather_event(weather_manager.advance(event_minute))
         st.session_state.dryer.set_inlet_humidity(weather_manager.inlet_humidity)
         st.session_state.true_outputs = st.session_state.dryer.advance(
@@ -864,11 +1079,13 @@ def live_panel() -> None:
         ):
             st.session_state.history[name] = st.session_state.history[name][-120:]
         st.session_state.history["minute"] = st.session_state.history["minute"][-120:]
+        if showcase.complete:
+            st.session_state.running = False
 
     controller = st.session_state.controller
     process_state = "normal" if st.session_state.running else "warning"
     process_text = "RUN" if st.session_state.running else "HOLD"
-    mpc_active = st.session_state.mode == "APC"
+    mpc_active = st.session_state.control_mode == "APC"
     solver_state = (
         "normal"
         if mpc_active and controller.last_success
@@ -1066,6 +1283,22 @@ def live_panel() -> None:
         if objective_mode == "target"
         else None
     )
+    if showcase.engaged:
+        phase_info = showcase.info
+        next_action = showcase.next_action()
+        next_action_text = (
+            f"Next: {next_action[0]} in {next_action[1]} min"
+            if next_action is not None
+            else "Sequence complete | process in HOLD"
+        )
+        render_showcase_banner(
+            phase=f"SHOWCASE {phase_info.number}/7 - {phase_info.title}",
+            status="APC ON" if showcase.apc_enabled else "APC OFF",
+            minute=showcase.scenario_minute,
+            description=phase_info.description,
+            next_action=next_action_text,
+            progress=showcase.progress,
+        )
     history_size = len(st.session_state.history["minute"])
     snapshot = (
         [chart_sample(index) for index in range(history_size)]
@@ -1108,6 +1341,85 @@ def live_panel() -> None:
     st.session_state.chart_last_sample_id = next_sample_id
     st.session_state.chart_last_event_id = next_event_id
     st.session_state.chart_needs_snapshot = False
+
+    if showcase.complete:
+        history = st.session_state.history
+        metrics = calculate_showcase_metrics(
+            history["minute"],
+            np.column_stack([history[name] for name in INPUT_NAMES]),
+            np.column_stack([history[name] for name in OUTPUT_NAMES]),
+            output_min,
+            output_max,
+        )
+        period_rows = metrics["periods"]
+        total_violations = sum(
+            int(row["Output constraint violations"]) for row in period_rows
+        )
+        maximum_moisture_deviation = max(
+            float(row["Maximum moisture deviation"]) for row in period_rows
+        )
+        recovery_time = metrics["recovery_time"]
+        render_section_title(
+            "SHOWCASE PERFORMANCE SUMMARY",
+            "guided sequence summary | not a controlled A/B benchmark",
+        )
+        render_value_grid(
+            [
+                ScadaValue(
+                    "KPI-101",
+                    "Recovery after APC enable",
+                    f"{recovery_time:.0f}" if recovery_time is not None else "--",
+                    "sim min",
+                ),
+                ScadaValue(
+                    "KPI-102",
+                    "Maximum moisture deviation",
+                    f"{maximum_moisture_deviation:.3f}",
+                    "% points",
+                ),
+                ScadaValue(
+                    "KPI-103",
+                    "Output constraint violations",
+                    str(total_violations),
+                    "signal-samples",
+                ),
+                ScadaValue(
+                    "KPI-104",
+                    "Normalized MV movement",
+                    f"{float(metrics['total_mv_movement']):.3f}",
+                    "range fractions",
+                ),
+            ],
+            columns=4,
+        )
+        st.dataframe(
+            pd.DataFrame(period_rows), width="stretch", hide_index=True
+        )
+        render_message(
+            "GUIDED RUN INTERPRETATION",
+            "During manual operation, the disturbances moved the process away "
+            "from target while input commands remained fixed. After APC "
+            "activation, the controller adjusted the available inputs and "
+            "moved the controlled outputs toward their targets while applying "
+            "the configured constraints.",
+        )
+        replay, leave = st.columns(2)
+        replay_requested = replay.button(
+            "RUN SHOWCASE AGAIN",
+            key="showcase_summary_replay",
+            width="stretch",
+        )
+        exit_requested = leave.button(
+            "EXIT SHOWCASE",
+            key="showcase_summary_exit",
+            width="stretch",
+        )
+        if replay_requested:
+            start_showcase()
+            st.rerun(scope="app")
+        if exit_requested:
+            stop_showcase()
+            st.rerun(scope="app")
 
     current_map_point = operating_point(
         st.session_state.minute,
@@ -1201,6 +1513,15 @@ def live_panel() -> None:
             }
             for event in st.session_state.weather_events
         )
+        event_rows.extend(
+            {
+                "Sim minute": event.minute,
+                "Event": event.event_type,
+                "From": "GUIDED SEQUENCE",
+                "To": event.detail,
+            }
+            for event in st.session_state.showcase_events
+        )
         event_rows.sort(key=lambda row: int(row["Sim minute"]), reverse=True)
         st.dataframe(
             pd.DataFrame(
@@ -1236,4 +1557,5 @@ def live_panel() -> None:
 
 live_panel()
 render_model_explanation()
-render_model_fitting()
+if not showcase.engaged:
+    render_model_fitting()

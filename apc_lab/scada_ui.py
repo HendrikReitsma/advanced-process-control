@@ -35,7 +35,41 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
 }
 
 [data-testid="stHeader"] {
-    display: none;
+    background: transparent;
+    height: 2.7rem;
+    min-height: 2.7rem;
+    pointer-events: none;
+}
+
+[data-testid="stToolbar"] {
+    background: transparent;
+    pointer-events: none;
+    visibility: visible;
+}
+
+[data-testid="stExpandSidebarButton"] {
+    background: var(--scada-grey) !important;
+    border: 2px solid !important;
+    border-color: var(--scada-light) var(--scada-dark) var(--scada-dark) var(--scada-light) !important;
+    border-radius: 0 !important;
+    box-shadow: 1px 1px 0 #202020;
+    color: #000000 !important;
+    margin-left: 0.45rem;
+    min-height: 1.95rem;
+    min-width: 2.15rem;
+    pointer-events: auto;
+    visibility: visible !important;
+}
+
+[data-testid="stExpandSidebarButton"]:active {
+    border-color: var(--scada-dark) var(--scada-light) var(--scada-light) var(--scada-dark) !important;
+    box-shadow: none;
+    transform: translate(1px, 1px);
+}
+
+[data-testid="stAppViewContainer"]:has([data-testid="stExpandSidebarButton"])
+[data-testid="stMainBlockContainer"] {
+    padding-top: 3.25rem;
 }
 
 [data-testid="stSidebar"] {
@@ -60,7 +94,7 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
     fill: #000000 !important;
 }
 
-#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"] {
+#MainMenu, footer, [data-testid="stDecoration"] {
     visibility: hidden;
 }
 
@@ -207,6 +241,44 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
 
 .scada-event-banner.is-idle {
     visibility: hidden;
+}
+
+.scada-showcase {
+    background: #e8c96e;
+    border: 3px solid;
+    border-color: #fff1b7 #705400 #705400 #fff1b7;
+    box-shadow: 2px 2px 0 #404040;
+    font-family: "Courier New", monospace;
+    margin: 0.42rem 0 0.55rem;
+    padding: 0.42rem 0.55rem;
+}
+
+.scada-showcase-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.6rem;
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
+.scada-showcase-detail {
+    font-size: 0.73rem;
+    margin-top: 0.2rem;
+}
+
+.scada-showcase-progress {
+    background: #404040;
+    border: 2px solid;
+    border-color: #303030 #ffffff #ffffff #303030;
+    height: 0.7rem;
+    margin-top: 0.32rem;
+    padding: 1px;
+}
+
+.scada-showcase-progress span {
+    background: var(--scada-blue);
+    display: block;
+    height: 100%;
 }
 
 .stButton > button, .stDownloadButton > button {
@@ -361,5 +433,30 @@ def render_event_banner(text: str, active: bool = True) -> None:
     state_class = "" if active else " is-idle"
     st.markdown(
         f'<div class="scada-event-banner{state_class}">EVENT: {escape(text)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_showcase_banner(
+    phase: str,
+    status: str,
+    minute: int,
+    description: str,
+    next_action: str,
+    progress: float,
+) -> None:
+    """Render the compact guided-scenario status above Process Trends."""
+
+    progress_percent = min(max(float(progress) * 100.0, 0.0), 100.0)
+    st.markdown(
+        '<div class="scada-showcase">'
+        '<div class="scada-showcase-head">'
+        f'<span>{escape(phase)} | {escape(status)}</span>'
+        f'<span>T+{int(minute):03d} MIN</span>'
+        '</div>'
+        f'<div class="scada-showcase-detail">{escape(description)} | '
+        f'{escape(next_action)}</div>'
+        '<div class="scada-showcase-progress">'
+        f'<span style="width:{progress_percent:.1f}%"></span></div></div>',
         unsafe_allow_html=True,
     )

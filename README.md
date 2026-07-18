@@ -52,6 +52,17 @@ behavior, optimizes the selected target, maximize, or minimize objective,
 applies the first move, and solves again. Each input has an operating range,
 move limit, and enable/freeze switch.
 
+### Guided APC Showcase
+
+Press **RUN APC SHOWCASE** in the operator station for one deterministic,
+100-simulation-minute demonstration. It holds nominal manual inputs while
+humid weather and a tank change move the process, enables APC at minute 55,
+and applies a later tank-change challenge before pausing with summary metrics.
+The summary reports target-band time, normalized controlled-variable error,
+moisture deviation, constraint violations, recovery time, and input movement;
+it is a guided run rather than a controlled A/B benchmark. **HOLD** pauses the
+scenario, and leaving showcase mode restores the normal interactive dashboard.
+
 ### Measurements And Disturbances
 
 The simulated plant retains noise-free internal states. The dashboard and
