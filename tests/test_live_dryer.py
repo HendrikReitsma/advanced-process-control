@@ -16,6 +16,7 @@ from apc_lab.live_dryer import (
 
 
 def test_process_directions_are_plausible():
+    assert NOMINAL_OUTPUTS[1] == 100.0
     high_feed = steady_outputs(NOMINAL_INPUTS + np.array([10.0, 0.0, 0.0]))
     hot_air = steady_outputs(NOMINAL_INPUTS + np.array([0.0, 0.0, 10.0]))
     assert high_feed[1] > NOMINAL_OUTPUTS[1]
@@ -181,8 +182,8 @@ def test_multivariable_mpc_respects_move_and_input_limits():
 
 
 def test_each_optimization_goal_produces_a_useful_move():
-    lower = np.array([75.0, 3.0, 3.0, 0.090])
-    upper = np.array([105.0, 5.5, 5.2, 0.145])
+    lower = np.array([75.0, 75.0, 3.0, 0.090])
+    upper = np.array([105.0, 137.5, 5.2, 0.145])
 
     maximize_air = ConstrainedDryerMPC()
     air_move = maximize_air.move(
@@ -215,8 +216,8 @@ def test_each_optimization_goal_produces_a_useful_move():
 
 def test_frozen_feed_flow_is_not_changed():
     controller = ConstrainedDryerMPC()
-    lower = np.array([75.0, 3.0, 3.0, 0.090])
-    upper = np.array([105.0, 5.5, 5.2, 0.145])
+    lower = np.array([75.0, 75.0, 3.0, 0.090])
+    upper = np.array([105.0, 137.5, 5.2, 0.145])
     next_inputs = controller.move(
         NOMINAL_OUTPUTS.copy(),
         NOMINAL_INPUTS.copy(),

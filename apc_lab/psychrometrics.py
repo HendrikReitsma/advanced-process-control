@@ -6,8 +6,8 @@ import numpy as np
 
 
 STANDARD_PRESSURE_KPA = 101.325
-MAP_HUMIDITY_RANGE = (0.06, 0.19)
-MAP_TEMPERATURE_RANGE = (60.0, 125.0)
+MAP_HUMIDITY_RANGE = (0.04, 0.22)
+MAP_TEMPERATURE_RANGE = (55.0, 135.0)
 RELATIVE_HUMIDITY_LEVELS = (10, 20, 30, 50)
 ENTHALPY_LEVELS = (250, 350, 450, 550)
 
@@ -18,7 +18,7 @@ STICKINESS_BOUNDARY = {
     "reference_temperature": 108.0,
     "linear_coefficient": -340.0,
     "quadratic_coefficient": -900.0,
-    "approaching_margin": 5.0,
+    "safety_margin": 5.0,
 }
 
 
@@ -89,6 +89,38 @@ def stickiness_boundary_temperature(humidity_ratio: float | np.ndarray) -> np.nd
     )
 
 
+def safe_stickiness_temperature(humidity_ratio: float | np.ndarray) -> np.ndarray:
+    """Return the configured stickiness boundary offset by its safety margin."""
+
+    return stickiness_boundary_temperature(humidity_ratio) - STICKINESS_BOUNDARY[
+        "safety_margin"
+    ]
+
+
+def maximum_safe_humidity_ratio(maximum_temperature: float) -> float:
+    """Solve the safe boundary for the relevant humidity ratio on the map."""
+
+    coefficients = (
+        STICKINESS_BOUNDARY["quadratic_coefficient"],
+        STICKINESS_BOUNDARY["linear_coefficient"],
+        STICKINESS_BOUNDARY["reference_temperature"]
+        - STICKINESS_BOUNDARY["safety_margin"]
+        - float(maximum_temperature),
+    )
+    roots = np.roots(coefficients) + STICKINESS_BOUNDARY["reference_humidity"]
+    humidity_min, humidity_max = MAP_HUMIDITY_RANGE
+    valid_roots = [
+        float(root.real)
+        for root in roots
+        if np.isreal(root) and humidity_min <= root.real <= humidity_max
+    ]
+    if len(valid_roots) != 1:
+        raise ValueError(
+            "The safe stickiness boundary must intersect the map exactly once."
+        )
+    return valid_roots[0]
+
+
 def assess_stickiness(
     exhaust_temperature: float, exhaust_humidity: float
 ) -> StickinessAssessment:
@@ -98,14 +130,14 @@ def assess_stickiness(
     margin = boundary - float(exhaust_temperature)
     if margin < 0.0:
         status = "STICKY RISK"
-    elif margin <= STICKINESS_BOUNDARY["approaching_margin"]:
+    elif margin <= STICKINESS_BOUNDARY["safety_margin"]:
         status = "APPROACHING"
     else:
         status = "SAFE"
     return StickinessAssessment(boundary, margin, status)
 
 
-def psychrometric_background() -> dict[str, object]:
+def psychrometric_background(maximum_exhaust_temperature: float) -> dict[str, object]:
     """Build bounded, serializable reference curves for the Plotly component."""
 
     temperatures = np.linspace(*MAP_TEMPERATURE_RANGE, 261)
@@ -146,6 +178,7 @@ def psychrometric_background() -> dict[str, object]:
         saturation <= humidity_max
     )
     boundary_humidity = np.linspace(*MAP_HUMIDITY_RANGE, 180)
+    maximum_humidity = maximum_safe_humidity_ratio(maximum_exhaust_temperature)
 
     return {
         "pressure_kpa": STANDARD_PRESSURE_KPA,
@@ -159,11 +192,20 @@ def psychrometric_background() -> dict[str, object]:
             "temperature": temperatures[saturation_mask].tolist(),
         },
         "boundary": {
-            "label": "Configured stickiness boundary",
+            "label": "Stickiness boundary",
             "humidity": boundary_humidity.tolist(),
             "temperature": stickiness_boundary_temperature(
                 boundary_humidity
             ).tolist(),
-            "approaching_margin": STICKINESS_BOUNDARY["approaching_margin"],
+        },
+        "safe_boundary": {
+            "label": f"Safe boundary (-{STICKINESS_BOUNDARY['safety_margin']:.0f} C)",
+            "humidity": boundary_humidity.tolist(),
+            "temperature": safe_stickiness_temperature(boundary_humidity).tolist(),
+        },
+        "constraint": {
+            "maximum_exhaust_temperature": float(maximum_exhaust_temperature),
+            "maximum_humidity": maximum_humidity,
+            "safety_margin": STICKINESS_BOUNDARY["safety_margin"],
         },
     }

@@ -3,9 +3,13 @@ import pytest
 
 from apc_lab.operating_map_component import prepare_operating_map_payload
 from apc_lab.psychrometrics import (
+    MAP_HUMIDITY_RANGE,
     assess_stickiness,
     humidity_ratio_at_relative_humidity,
+    maximum_safe_humidity_ratio,
     moist_air_enthalpy,
+    psychrometric_background,
+    safe_stickiness_temperature,
     stickiness_boundary_temperature,
 )
 
@@ -31,6 +35,27 @@ def test_stickiness_classification_on_both_sides_of_boundary():
     assert assess_stickiness(boundary - 10.0, humidity).status == "SAFE"
     assert assess_stickiness(boundary - 2.0, humidity).status == "APPROACHING"
     assert assess_stickiness(boundary + 1.0, humidity).status == "STICKY RISK"
+
+
+def test_safe_curve_derives_the_humidity_limit_from_maximum_temperature():
+    maximum_humidity = maximum_safe_humidity_ratio(100.0)
+
+    assert maximum_humidity == pytest.approx(0.128627, abs=1e-6)
+    assert MAP_HUMIDITY_RANGE[0] < maximum_humidity < MAP_HUMIDITY_RANGE[1]
+    assert safe_stickiness_temperature(maximum_humidity) == pytest.approx(100.0)
+
+
+def test_operating_map_background_exposes_safe_limit_intersection():
+    background = psychrometric_background(100.0)
+
+    assert background["humidity_range"] == [0.04, 0.22]
+    assert background["temperature_range"] == [55.0, 135.0]
+    assert background["constraint"]["maximum_humidity"] == pytest.approx(
+        maximum_safe_humidity_ratio(100.0)
+    )
+    assert len(background["safe_boundary"]["humidity"]) == len(
+        background["boundary"]["humidity"]
+    )
 
 
 def test_reset_payload_starts_new_run_with_empty_trail_snapshot():

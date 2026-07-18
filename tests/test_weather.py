@@ -41,8 +41,9 @@ def test_daily_inlet_humidity_is_smooth_and_deterministic():
         second_values.append(second.inlet_humidity)
 
     assert np.array_equal(first_values, second_values)
-    assert np.ptp(first_values) > 0.0009
-    assert np.max(np.abs(np.diff(first_values))) < 0.00003
+    assert np.ptp(first_values) > 0.003
+    assert np.min(first_values) < NOMINAL_INLET_HUMIDITY < np.max(first_values)
+    assert np.max(np.abs(np.diff(first_values))) < 0.0003
 
 
 def test_manual_humid_weather_rises_holds_recovers_and_moves_true_plant_target():
@@ -79,10 +80,17 @@ def test_manual_humid_weather_rises_holds_recovers_and_moves_true_plant_target()
         NOMINAL_INPUTS,
         inlet_humidity=NOMINAL_INLET_HUMIDITY + HUMID_WEATHER_INCREASE,
     )
+    dry = steady_outputs(
+        NOMINAL_INPUTS,
+        inlet_humidity=NOMINAL_INLET_HUMIDITY - 0.002,
+    )
     assert humid[0] < baseline[0]
     assert humid[1] == baseline[1]
     assert humid[2] > baseline[2]
     assert humid[3] > baseline[3]
+    assert dry[0] > baseline[0]
+    assert dry[2] < baseline[2]
+    assert dry[3] < baseline[3]
 
 
 def test_reset_restores_initial_weather_state_and_clears_events():

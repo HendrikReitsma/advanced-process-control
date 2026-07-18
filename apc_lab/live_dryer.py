@@ -10,7 +10,7 @@ INPUT_UNITS = ("kg/min", "m3/s", "C")
 OUTPUT_UNITS = ("C", "bar", "%", "kg water/kg dry air")
 
 NOMINAL_INPUTS = np.array([100.0, 20.0, 180.0])
-NOMINAL_OUTPUTS = np.array([90.0, 4.0, 4.5, 0.120])
+NOMINAL_OUTPUTS = np.array([90.0, 100.0, 4.5, 0.120])
 INPUT_MIN = np.array([70.0, 14.0, 150.0])
 INPUT_MAX = np.array([140.0, 28.0, 220.0])
 MAX_MOVE = np.array([2.0, 0.4, 2.0])
@@ -19,14 +19,14 @@ MAX_MOVE = np.array([2.0, 0.4, 2.0])
 GAIN_MATRIX = np.array(
     [
         [-0.18, 1.20, 0.55],
-        [0.055, -0.05, 0.00],
+        [1.375, -1.25, 0.00],
         [0.050, -0.10, -0.055],
         [0.0022, -0.0040, -0.0018],
     ]
 )
 OUTPUT_TAU = np.array([5.0, 3.0, 15.0, 8.0])
 INPUT_SCALE = INPUT_MAX - INPUT_MIN
-OUTPUT_SCALE = np.array([30.0, 2.5, 3.0, 0.050])
+OUTPUT_SCALE = np.array([30.0, 62.5, 3.0, 0.050])
 
 # Incoming feed dry matter is an unmeasured plant disturbance. Higher dry
 # matter leaves less water to evaporate, reduces outlet humidity and powder
@@ -36,7 +36,7 @@ FEED_DRY_MATTER_UNIT = "% dry matter"
 # Per one percentage-point change in incoming feed dry matter, in OUTPUT_NAMES
 # order. A Tank A to B switch (50% to 52% dry matter) changes steady-state
 # powder moisture by -0.56 percentage points and exhaust humidity by -0.005.
-FEED_DRY_MATTER_GAIN = np.array([0.28, 0.025, -0.28, -0.0025])
+FEED_DRY_MATTER_GAIN = np.array([0.28, 0.625, -0.28, -0.0025])
 FEED_DRY_MATTER_TRANSITION_TAU = 2.0
 FEED_TANKS = {"Tank A": 50.0, "Tank B": 52.0, "Tank C": 48.5}
 
@@ -45,10 +45,10 @@ FEED_TANKS = {"Tank A": 50.0, "Tank B": 52.0, "Tank C": 48.5}
 # powder moisture and exhaust humidity rise. Feed pressure has no direct gain.
 NOMINAL_INLET_HUMIDITY = 0.008
 INLET_HUMIDITY_UNIT = "kg water/kg dry air"
-INLET_HUMIDITY_GAIN = np.array([-350.0, 0.0, 150.0, 1.5])
-INLET_HUMIDITY_DAILY_AMPLITUDE = 0.001
-INLET_HUMIDITY_DAILY_PERIOD = 24 * 60
-HUMID_WEATHER_INCREASE = 0.003
+INLET_HUMIDITY_GAIN = np.array([-450.0, 0.0, 225.0, 1.8])
+INLET_HUMIDITY_DAILY_AMPLITUDE = 0.002
+INLET_HUMIDITY_DAILY_PERIOD = 4 * 60
+HUMID_WEATHER_INCREASE = 0.004
 HUMID_WEATHER_APPROACH_MINUTES = 30
 HUMID_WEATHER_PLATEAU_MINUTES = 50
 HUMID_WEATHER_RECOVERY_MINUTES = 40
@@ -59,9 +59,9 @@ WEATHER_MODES = (
 )
 
 # One-sigma sensor noise at the Normal setting, in OUTPUT_NAMES order:
-# 0.20 C exhaust temperature, 0.015 bar pressure, 0.040 moisture percentage
+# 0.20 C exhaust temperature, 0.375 bar pressure, 0.040 moisture percentage
 # points, and 0.0005 kg water/kg dry air exhaust humidity.
-MEASUREMENT_NOISE_STD = np.array([0.20, 0.015, 0.040, 0.0005])
+MEASUREMENT_NOISE_STD = np.array([0.20, 0.375, 0.040, 0.0005])
 NOISE_MULTIPLIERS = {"Low": 0.5, "Normal": 1.0, "High": 2.0}
 
 

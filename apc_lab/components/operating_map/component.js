@@ -54,24 +54,26 @@ function regionTrace(name, x, upper, lower, color) {
 
 function staticTraces(background, snapshot, current) {
   const boundary = background.boundary;
+  const safeBoundary = background.safe_boundary;
+  const constraint = background.constraint;
   const x = boundary.humidity;
   const y = boundary.temperature;
+  const safe = safeBoundary.temperature;
   const yMin = background.temperature_range[0];
   const yMax = background.temperature_range[1];
-  const approaching = y.map((value) => value - boundary.approaching_margin);
   const traces = [
     regionTrace(
       "SAFE",
       x,
-      approaching,
+      safe,
       x.map(() => yMin),
       "rgba(53,208,91,0.08)"
     ),
     regionTrace(
-      "APPROACHING",
+      "SAFETY OFFSET",
       x,
       y,
-      approaching,
+      safe,
       "rgba(255,191,47,0.16)"
     ),
     regionTrace(
@@ -97,6 +99,38 @@ function staticTraces(background, snapshot, current) {
     name: boundary.label,
     line: { color: COLORS.approaching, width: 2 },
     hovertemplate: `${boundary.label}<br>w=%{x:.4f}<br>T=%{y:.1f} C<extra></extra>`,
+  });
+  traces.push({
+    x: safeBoundary.humidity,
+    y: safe,
+    mode: "lines",
+    name: safeBoundary.label,
+    line: { color: COLORS.safe, width: 2, dash: "dash" },
+    hovertemplate: `${safeBoundary.label}<br>w=%{x:.4f}<br>T=%{y:.1f} C<extra></extra>`,
+  });
+  traces.push({
+    x: background.humidity_range,
+    y: [constraint.maximum_exhaust_temperature, constraint.maximum_exhaust_temperature],
+    mode: "lines",
+    name: "Maximum exhaust temperature",
+    line: { color: COLORS.risk, width: 1.5, dash: "dot" },
+    hovertemplate: `Maximum exhaust temperature: ${constraint.maximum_exhaust_temperature.toFixed(1)} C<extra></extra>`,
+  });
+  traces.push({
+    x: [constraint.maximum_humidity, constraint.maximum_humidity],
+    y: background.temperature_range,
+    mode: "lines",
+    name: "Derived humidity maximum",
+    line: { color: COLORS.risk, width: 1.5, dash: "dash" },
+    hovertemplate: `Derived humidity maximum: ${constraint.maximum_humidity.toFixed(4)} kg/kg dry air<extra></extra>`,
+  });
+  traces.push({
+    x: [constraint.maximum_humidity],
+    y: [constraint.maximum_exhaust_temperature],
+    mode: "markers",
+    name: "Safe-limit intersection",
+    marker: { color: COLORS.risk, size: 9, symbol: "diamond" },
+    hovertemplate: `Safe-limit intersection<br>w=${constraint.maximum_humidity.toFixed(4)} kg/kg dry air<br>T=${constraint.maximum_exhaust_temperature.toFixed(1)} C<extra></extra>`,
   });
   traces.push({
     x: [null],
@@ -158,6 +192,20 @@ function makeLayout(background, runId, width, height) {
       font: { family: FONT_FAMILY, size: 10 },
       bgcolor: "rgba(0,0,0,0)",
     },
+    annotations: [
+      {
+        x: background.constraint.maximum_humidity,
+        y: background.constraint.maximum_exhaust_temperature,
+        text: `w max ${background.constraint.maximum_humidity.toFixed(4)}`,
+        showarrow: true,
+        arrowhead: 2,
+        ax: 48,
+        ay: -28,
+        font: { family: FONT_FAMILY, size: 10, color: COLORS.risk },
+        bgcolor: "rgba(7,17,15,0.85)",
+        bordercolor: COLORS.risk,
+      },
+    ],
     xaxis: {
       range: background.humidity_range,
       fixedrange: false,
@@ -190,6 +238,7 @@ async function resetMap(state, payload) {
   const snapshot = payload.snapshot || [];
   const setup = staticTraces(payload.background, snapshot, payload.current);
   state.runId = payload.run_id;
+  state.backgroundSignature = JSON.stringify(payload.background.constraint);
   state.processedSampleId = snapshot.reduce(
     (latest, sample) => Math.max(latest, sample.sample_id),
     -1
@@ -247,6 +296,7 @@ export default function operatingMap(component) {
       root,
       chart: parentElement.querySelector("#apc-operating-map-chart"),
       runId: null,
+      backgroundSignature: null,
       processedSampleId: -1,
       trailIndex: -1,
       pointIndex: -1,
@@ -267,8 +317,11 @@ export default function operatingMap(component) {
     root.__apcOperatingMap = state;
   }
 
+  const backgroundSignature = JSON.stringify(data.background.constraint);
   state.queue = state.queue.then(() =>
-    state.runId !== data.run_id ? resetMap(state, data) : appendPayload(state, data)
+    state.runId !== data.run_id || state.backgroundSignature !== backgroundSignature
+      ? resetMap(state, data)
+      : appendPayload(state, data)
   );
 
   return () => {

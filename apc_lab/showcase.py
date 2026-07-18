@@ -9,34 +9,53 @@ from apc_lab.live_dryer import INPUT_SCALE, NOMINAL_OUTPUTS, OUTPUT_SCALE
 
 
 SHOWCASE_SEED = 2026
+SHOWCASE_SCAN_MINUTES = 2
+SHOWCASE_TANK_CHANGE_MINUTE = 15
+SHOWCASE_APC_MINUTE = 35
+SHOWCASE_CHALLENGE_MINUTE = 65
 SHOWCASE_END_MINUTE = 100
-SHOWCASE_APC_MINUTE = 55
 SHOWCASE_TARGET_TOLERANCE = 0.10 * OUTPUT_SCALE
+
+
+@dataclass(frozen=True)
+class ShowcaseControllerTuning:
+    """More responsive MPC settings used only by the guided scenario."""
+
+    prediction_horizon: int = 20
+    control_horizon: int = 5
+    objective_weight: float = 1000.0
+    move_weight: float = 0.005
+
+
+SHOWCASE_CONTROLLER_TUNING = ShowcaseControllerTuning()
+
+
+def apply_showcase_controller_tuning(controller: object) -> None:
+    """Apply the guided-run MPC preset without changing normal mode defaults."""
+
+    for name, value in SHOWCASE_CONTROLLER_TUNING.__dict__.items():
+        setattr(controller, name, value)
 
 
 class ShowcasePhase(str, Enum):
     IDLE = "IDLE"
     BASELINE = "BASELINE"
-    HUMID_WEATHER = "HUMID_WEATHER"
-    TANK_CHANGE = "TANK_CHANGE"
     MANUAL_DRIFT = "MANUAL_DRIFT"
     APC_TAKEOVER = "APC_TAKEOVER"
     APC_CHALLENGE = "APC_CHALLENGE"
     COMPLETE = "COMPLETE"
 
 
-ACTION_HUMID_WEATHER = "humid_weather"
 ACTION_TANK_CHANGE = "tank_change"
 ACTION_APC_ENABLE = "apc_enable"
 ACTION_APC_CHALLENGE = "apc_challenge"
 ACTION_COMPLETE = "complete"
 
 ACTION_SCHEDULE = (
-    (15, ACTION_HUMID_WEATHER, "humid weather"),
-    (30, ACTION_TANK_CHANGE, "tank change"),
-    (55, ACTION_APC_ENABLE, "APC takeover"),
-    (75, ACTION_APC_CHALLENGE, "APC challenge"),
-    (100, ACTION_COMPLETE, "showcase complete"),
+    (SHOWCASE_TANK_CHANGE_MINUTE, ACTION_TANK_CHANGE, "tank change"),
+    (SHOWCASE_APC_MINUTE, ACTION_APC_ENABLE, "APC takeover"),
+    (SHOWCASE_CHALLENGE_MINUTE, ACTION_APC_CHALLENGE, "APC challenge"),
+    (SHOWCASE_END_MINUTE, ACTION_COMPLETE, "showcase complete"),
 )
 
 
@@ -51,23 +70,17 @@ PHASE_INFO = {
     ShowcasePhase.BASELINE: PhaseInfo(
         1, "MANUAL BASELINE", "Stable operation at nominal manual inputs"
     ),
-    ShowcasePhase.HUMID_WEATHER: PhaseInfo(
-        2, "HUMID WEATHER", "Inlet-air moisture is disturbing the process"
-    ),
-    ShowcasePhase.TANK_CHANGE: PhaseInfo(
-        3, "TANK CHANGE", "Feed composition has changed; manual inputs stay fixed"
-    ),
     ShowcasePhase.MANUAL_DRIFT: PhaseInfo(
-        4, "MANUAL OPERATION UNDER DISTURBANCE", "Outputs drift with APC held off"
+        2, "MANUAL TANK RESPONSE", "Tank change is visible while APC is held off"
     ),
     ShowcasePhase.APC_TAKEOVER: PhaseInfo(
-        5, "APC TAKEOVER", "Controller is recovering outputs toward target"
+        3, "APC RECOVERY", "Controller is recovering outputs toward target"
     ),
     ShowcasePhase.APC_CHALLENGE: PhaseInfo(
-        6, "APC DISTURBANCE REJECTION", "APC is responding to a later tank change"
+        4, "APC TANK RESPONSE", "APC is rejecting the second tank change"
     ),
     ShowcasePhase.COMPLETE: PhaseInfo(
-        7, "SEQUENCE COMPLETE", "Final trends and guided-run metrics are retained"
+        5, "SEQUENCE COMPLETE", "Final trends and guided-run metrics are retained"
     ),
 }
 
@@ -75,18 +88,14 @@ PHASE_INFO = {
 def phase_for_minute(minute: int) -> ShowcasePhase:
     """Return the guided phase for one scenario simulation minute."""
 
-    if minute >= 100:
+    if minute >= SHOWCASE_END_MINUTE:
         return ShowcasePhase.COMPLETE
-    if minute >= 75:
+    if minute >= SHOWCASE_CHALLENGE_MINUTE:
         return ShowcasePhase.APC_CHALLENGE
-    if minute >= 55:
+    if minute >= SHOWCASE_APC_MINUTE:
         return ShowcasePhase.APC_TAKEOVER
-    if minute >= 40:
+    if minute >= SHOWCASE_TANK_CHANGE_MINUTE:
         return ShowcasePhase.MANUAL_DRIFT
-    if minute >= 30:
-        return ShowcasePhase.TANK_CHANGE
-    if minute >= 15:
-        return ShowcasePhase.HUMID_WEATHER
     return ShowcasePhase.BASELINE
 
 
@@ -187,7 +196,7 @@ def calculate_showcase_metrics(
 
     periods = []
     for label, start, end in (
-        ("Manual disturbance period", 15, SHOWCASE_APC_MINUTE),
+        ("Manual disturbance period", SHOWCASE_TANK_CHANGE_MINUTE, SHOWCASE_APC_MINUTE),
         ("APC recovery/challenge period", SHOWCASE_APC_MINUTE, SHOWCASE_END_MINUTE + 1),
     ):
         mask = (time >= start) & (time < end)

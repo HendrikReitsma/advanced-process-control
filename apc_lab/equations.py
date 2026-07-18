@@ -24,12 +24,12 @@ MEASUREMENT_EQUATION = (
 OUTPUT_EFFECT_EQUATIONS = (
     r"\begin{aligned}"
     r"T_{exh,ss} &= 90-0.18\Delta F+1.20\Delta A+0.55\Delta T_{in}"
-    r"+0.28\Delta DM-350\Delta H_{in} \\"
-    r"P_{feed,ss} &= 4+0.055\Delta F-0.05\Delta A+0.025\Delta DM \\"
+    r"+0.28\Delta DM-450\Delta H_{in} \\"
+    r"P_{feed,ss} &= 100+1.375\Delta F-1.25\Delta A+0.625\Delta DM \\"
     r"M_{powder,ss} &= 4.5+0.050\Delta F-0.10\Delta A-0.055\Delta T_{in}"
-    r"-0.28\Delta DM+150\Delta H_{in} \\"
+    r"-0.28\Delta DM+225\Delta H_{in} \\"
     r"H_{exh,ss} &= 0.12+0.0022\Delta F-0.0040\Delta A-0.0018\Delta T_{in}"
-    r"-0.0025\Delta DM+1.5\Delta H_{in}"
+    r"-0.0025\Delta DM+1.8\Delta H_{in}"
     r"\end{aligned}"
 )
 

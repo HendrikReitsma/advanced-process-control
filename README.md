@@ -55,8 +55,9 @@ move limit, and enable/freeze switch.
 ### Guided APC Showcase
 
 Press **RUN APC SHOWCASE** in the operator station for one deterministic,
-100-simulation-minute demonstration. It holds nominal manual inputs while
-humid weather and a tank change move the process, enables APC at minute 55,
+200-simulation-minute demonstration with two minutes represented by each scan.
+It holds nominal manual inputs while humid weather and a tank change move the
+process, enables APC at minute 110,
 and applies a later tank-change challenge before pausing with summary metrics.
 The summary reports target-band time, normalized controlled-variable error,
 moisture deviation, constraint violations, recovery time, and input movement;
@@ -71,8 +72,10 @@ Off, Low, Normal, or High.
 
 Tank A, Tank B, and Tank C have incoming feed dry matter of 50.0%, 52.0%, and
 48.5%. Manual or scheduled tank changes alter the feed water load through a
-two-minute feed-line mixing lag. Inlet-air humidity can remain constant, follow
-a smooth daily cycle, or include reproducible humid-weather events.
+two-minute feed-line mixing lag. Feed pressure is shown on a synthetic
+100-bar nominal scale. Inlet-air humidity can remain constant, follow a smooth
+daily cycle above and below nominal, or include reproducible humid-weather
+events.
 
 Feed dry matter and inlet humidity are not supplied to the controller as
 measured-disturbance feedforward variables. The MPC rejects their effects

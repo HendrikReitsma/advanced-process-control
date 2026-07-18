@@ -41,20 +41,6 @@ When changing persisted `ConstrainedDryerMPC` fields or defaults, increment
 `CONTROLLER_VERSION` in `live_app.py` so open Streamlit sessions do not retain
 stale controller objects.
 
-## Verification
-
-From an activated environment installed with `python -m pip install -e
-".[dev]"`, run:
-
-```powershell
-python -m pytest -q
-python -c "from streamlit.testing.v1 import AppTest; app=AppTest.from_file('live_app.py'); app.run(timeout=30); assert not app.exception"
-python -m pip check
-```
-
-Also run `python run_lab.py` when changing the SISO track. Its generated images
-belong in the ignored `artifacts/` directory.
-
 ## Repository Hygiene
 
 - Keep `docs/images/dashboard.png` generic and free of private browser data.
@@ -63,3 +49,36 @@ belong in the ignored `artifacts/` directory.
 - Use pandas for CSV parsing and NumPy arrays for model calculations.
 - Add focused tests for changed process directions, constraints, objectives,
   frozen inputs, or fitting behavior.
+
+## Implementation Style
+
+Prefer the smallest change that directly satisfies the request.
+
+- Reuse the existing architecture, helpers, state and configuration.
+- Prefer parameter, configuration or CSS changes over new logic when they can solve the problem cleanly.
+- Do not broaden the task into refactoring, redesign or general hardening.
+- Do not add abstractions, fallback systems, dependencies or test infrastructure for hypothetical future needs.
+- Fix problems that are actually observed. Do not investigate speculative edge cases unless they present an obvious safety or correctness risk.
+- Do not create multiple competing implementations.
+- Preserve working behaviour outside the requested scope.
+- Once the requested change works and the relevant verification passes, stop.
+
+Keep task updates concise. Do not narrate every file inspection or routine command.
+
+## Proportional Verification
+
+Match verification to the size and risk of the change.
+
+- Documentation, wording, `.gitignore`, CSS and simple parameter changes: inspect the diff and run one directly relevant check.
+- Live dashboard or UI changes: run Streamlit AppTest. Perform one visual inspection only when appearance cannot be verified otherwise.
+- Model, controller, simulation-state or event changes: add or update focused tests and run `python -m pytest -q` once.
+- SISO-track changes: also run `python run_lab.py`.
+- Dependency or packaging changes: run `python -m pip check` and the relevant package-build check.
+- Before committing and pushing a substantial change: run the full applicable verification once.
+
+Do not repeatedly rerun successful checks. If a check is blocked by the environment, report it instead of searching for elaborate workarounds.
+
+Always run:
+
+```powershell
+git diff --check
