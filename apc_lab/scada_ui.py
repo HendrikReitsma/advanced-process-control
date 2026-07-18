@@ -1,4 +1,4 @@
-"""Small reusable presentation helpers for the retro SCADA dashboard."""
+"""Small reusable presentation helpers for the compact SCADA dashboard."""
 
 from dataclasses import dataclass
 from html import escape

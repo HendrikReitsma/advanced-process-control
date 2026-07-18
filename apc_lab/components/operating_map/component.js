@@ -122,7 +122,7 @@ function staticTraces(background, snapshot, current) {
     mode: "lines",
     name: "Derived humidity maximum",
     line: { color: COLORS.risk, width: 1.5, dash: "dash" },
-    hovertemplate: `Derived humidity maximum: ${constraint.maximum_humidity.toFixed(4)} kg/kg dry air<extra></extra>`,
+    hovertemplate: `Derived humidity maximum: ${constraint.maximum_humidity.toFixed(4)} kg water/kg dry air<extra></extra>`,
   });
   traces.push({
     x: [constraint.maximum_humidity],
@@ -130,7 +130,7 @@ function staticTraces(background, snapshot, current) {
     mode: "markers",
     name: "Safe-limit intersection",
     marker: { color: COLORS.risk, size: 9, symbol: "diamond" },
-    hovertemplate: `Safe-limit intersection<br>w=${constraint.maximum_humidity.toFixed(4)} kg/kg dry air<br>T=${constraint.maximum_exhaust_temperature.toFixed(1)} C<extra></extra>`,
+    hovertemplate: `Safe-limit intersection<br>w=${constraint.maximum_humidity.toFixed(4)} kg water/kg dry air<br>T=${constraint.maximum_exhaust_temperature.toFixed(1)} C<extra></extra>`,
   });
   traces.push({
     x: [null],

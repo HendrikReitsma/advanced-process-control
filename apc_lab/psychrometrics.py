@@ -43,7 +43,7 @@ def saturation_vapor_pressure_kpa(temperature_c: float | np.ndarray) -> np.ndarr
 
     Antoine coefficients use temperature in degC and pressure in mmHg. The
     lower set covers 1-100 degC and the upper set covers 99-374 degC; pressure
-    is converted to kPa. The map only evaluates the 60-125 degC overlap.
+    is converted to kPa. The configured map spans 55-135 degC.
     """
 
     temperature = np.asarray(temperature_c, dtype=float)

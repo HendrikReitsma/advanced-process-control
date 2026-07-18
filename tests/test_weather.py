@@ -97,7 +97,7 @@ def test_reset_restores_initial_weather_state_and_clears_events():
     app = AppTest.from_file("live_app.py").run(timeout=30)
     initial_run_id = app.session_state.chart_run_id
 
-    _element_by_label(app.selectbox, "Inlet humidity mode").set_value(
+    _element_by_label(app.selectbox, "Inlet-air humidity mode").set_value(
         "Daily variation + weather events"
     )
     _element_by_label(app.button, "TRIGGER HUMID WEATHER").click().run(timeout=30)

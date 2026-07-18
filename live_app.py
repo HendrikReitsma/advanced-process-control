@@ -548,9 +548,9 @@ rejects both through measured-output feedback.
             """
 The input delay is **3 simulated minutes**. A tank change sets a new dry-matter
 target and the feed line transitions to it with a **2 minute** first-order lag.
-Inlet humidity is represented as kg water per kg dry air. Sensible heating does
-not change this humidity ratio; humid weather therefore adds water load at the
-dryer inlet.
+Inlet-air humidity is represented as kg water per kg dry air. Sensible heating
+does not change this humidity ratio; humid weather therefore adds water load at
+the dryer inlet.
 A gain is the final output change caused by one unit of input change, with
 other inputs held constant. Sensor noise can be disabled or scaled in the
 operator station.
@@ -628,8 +628,8 @@ The operating map uses the true simulated exhaust temperature and humidity
 ratio. Moist-air enthalpy is calculated as
 `h = 1.006 T + w (2501 + 1.86 T)` in kJ/kg dry air. Relative-humidity
 references use the Antoine saturation-pressure correlation at 101.325 kPa.
-The displayed stickiness curve is a configured, product-independent model
-boundary. It is not an operating limit for a real product or dryer.
+The displayed stickiness curve is a configured example boundary. It is not a
+validated correlation or operating limit for a real product or dryer.
 """
         )
 
@@ -837,7 +837,7 @@ with st.sidebar:
         "RESET", width="stretch", on_click=reset, disabled=showcase.engaged
     )
 
-    render_sidebar_title("SENSOR INPUT")
+    render_sidebar_title("SENSOR SETTINGS")
     noise_checkbox_args: dict[str, object] = {
         "key": "noise_enabled",
         "disabled": showcase.engaged,
@@ -869,9 +869,9 @@ with st.sidebar:
     st.session_state.dryer.configure_time_step(simulation_minutes_per_tick)
     st.session_state.controller.configure_time_step(simulation_minutes_per_tick)
 
-    render_sidebar_title("INLET AIR WEATHER")
+    render_sidebar_title("INLET-AIR WEATHER")
     weather_mode = st.selectbox(
-        "Inlet humidity mode",
+        "Inlet-air humidity mode",
         WEATHER_MODES,
         index=widget_default("weather_mode", 0),
         key="weather_mode",
@@ -887,7 +887,7 @@ with st.sidebar:
         disabled=showcase.engaged,
     )
     st.caption(
-        f"Manual event: +{HUMID_WEATHER_INCREASE:.4f} {INLET_HUMIDITY_UNIT}"
+        f"Humidity increase: +{HUMID_WEATHER_INCREASE:.4f} {INLET_HUMIDITY_UNIT}"
     )
 
     render_sidebar_title("FEED SUPPLY")
@@ -903,7 +903,7 @@ with st.sidebar:
         **automatic_tank_checkbox_args,
     )
     automatic_tank_interval = st.slider(
-        "Automatic change interval (sim min)",
+        "Automatic change interval (simulation min)",
         30,
         120,
         widget_default("automatic_tank_interval", 60),
@@ -1242,10 +1242,34 @@ def live_panel() -> None:
     weather_active = weather_manager.state != "NORMAL"
     render_section_title("DISTURBANCES")
     disturbance_rows = [
-        ["Active feed tank", tank_manager.current_tank, f"{last_change_values} at {last_change_minute}", "selected"],
-        ["Incoming feed dry matter", f"{st.session_state.dryer.feed_dry_matter:.2f}", "recent change" if recent_tank_event else "stable", FEED_DRY_MATTER_UNIT],
-        ["Inlet-air humidity", f"{weather_manager.inlet_humidity:.4f}", weather_manager.state, INLET_HUMIDITY_UNIT],
-        ["Dynamic-humidity mode", weather_manager.mode, f"last event T+{last_weather_event.minute:05d}" if last_weather_event is not None else "no weather event", "selected"],
+        [
+            "Active feed tank",
+            tank_manager.current_tank,
+            f"{last_change_values} at {last_change_minute}",
+            "--",
+        ],
+        [
+            "Incoming feed dry matter",
+            f"{st.session_state.dryer.feed_dry_matter:.2f}",
+            "recent change" if recent_tank_event else "stable",
+            FEED_DRY_MATTER_UNIT,
+        ],
+        [
+            "Inlet-air humidity",
+            f"{weather_manager.inlet_humidity:.4f}",
+            weather_manager.state,
+            INLET_HUMIDITY_UNIT,
+        ],
+        [
+            "Inlet-humidity mode",
+            weather_manager.mode,
+            (
+                f"last event T+{last_weather_event.minute:05d}"
+                if last_weather_event is not None
+                else "no weather event"
+            ),
+            "--",
+        ],
     ]
     render_parameter_table(
         ["Parameter", "Current value", "State / last change", "Unit"],
@@ -1302,7 +1326,7 @@ def live_panel() -> None:
         next_action_text = (
             f"Next: {next_action[0]} in {next_action[1]} min"
             if next_action is not None
-            else "Sequence complete | process in HOLD"
+            else "Sequence complete | operator handoff"
         )
         render_showcase_banner(
             phase=f"SHOWCASE {phase_info.number}/5 - {phase_info.title}",
@@ -1330,9 +1354,10 @@ def live_panel() -> None:
         config={
             "input_names": list(INPUT_NAMES)
             + [FEED_DRY_MATTER_HISTORY_NAME, INLET_HUMIDITY_HISTORY_NAME],
-            "input_units": list(INPUT_UNITS) + ["% DM", "kg/kg dry air"],
+            "input_units": list(INPUT_UNITS)
+            + ["% dry matter", "kg water/kg dry air"],
             "output_names": list(OUTPUT_NAMES),
-            "output_units": list(OUTPUT_UNITS[:3]) + ["kg/kg dry air"],
+            "output_units": list(OUTPUT_UNITS),
             "process_input_count": len(INPUT_NAMES),
             "input_limits": {
                 "lower": input_min.tolist(),
@@ -1475,7 +1500,7 @@ def live_panel() -> None:
                 ),
                 ScadaValue(
                     tag="MAP-102",
-                    label="Exhaust humidity ratio",
+                    label="Exhaust air humidity ratio",
                     value=f"{current_map_point['humidity']:.4f}",
                     unit="kg water/kg dry air",
                     state=map_state,
@@ -1518,17 +1543,18 @@ def live_panel() -> None:
         ):
             render_message(
                 "CONFIGURATION CONFLICT",
-                f"Humidity target {objective_target:.4f} exceeds the derived "
+                f"Exhaust air humidity target {objective_target:.4f} exceeds "
+                "the derived "
                 f"safe upper limit {derived_humidity_max:.4f} kg water/kg dry air.",
             )
         render_operating_map(map_payload)
     st.session_state.operating_map_last_sample_id = next_map_sample_id
     st.session_state.operating_map_needs_snapshot = False
 
-    with st.expander("PROCESS DISTURBANCE EVENT LOG"):
+    with st.expander("PROCESS EVENT LOG"):
         event_rows = [
             {
-                "Sim minute": event.minute,
+                "Simulation minute": event.minute,
                 "Event": event.event_type,
                 "From": f"{event.old_tank} ({event.old_dry_matter:.1f}% DM)",
                 "To": f"{event.new_tank} ({event.new_dry_matter:.1f}% DM)",
@@ -1537,7 +1563,7 @@ def live_panel() -> None:
         ]
         event_rows.extend(
             {
-                "Sim minute": event.minute,
+                "Simulation minute": event.minute,
                 "Event": event.event_type,
                 "From": "NORMAL",
                 "To": f"+{event.humidity_increase:.4f} {INLET_HUMIDITY_UNIT}",
@@ -1546,18 +1572,18 @@ def live_panel() -> None:
         )
         event_rows.extend(
             {
-                "Sim minute": event.minute,
+                "Simulation minute": event.minute,
                 "Event": event.event_type,
-                "From": "GUIDED SEQUENCE",
+                "From": "APC SHOWCASE",
                 "To": event.detail,
             }
             for event in st.session_state.showcase_events
         )
-        event_rows.sort(key=lambda row: int(row["Sim minute"]), reverse=True)
+        event_rows.sort(key=lambda row: int(row["Simulation minute"]), reverse=True)
         st.dataframe(
             pd.DataFrame(
                 event_rows,
-                columns=("Sim minute", "Event", "From", "To"),
+                columns=("Simulation minute", "Event", "From", "To"),
             ),
             width="stretch",
             hide_index=True,
