@@ -195,6 +195,20 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
 
 .scada-message strong { color: var(--scada-blue); }
 
+.scada-event-banner {
+    background: #e8c96e;
+    border: 2px solid;
+    border-color: #fff1b7 #705400 #705400 #fff1b7;
+    box-shadow: 1px 1px 0 #202020;
+    font: 700 0.75rem "Courier New", monospace;
+    margin: 0.35rem 0 0.5rem;
+    padding: 0.38rem 0.48rem;
+}
+
+.scada-event-banner.is-idle {
+    visibility: hidden;
+}
+
 .stButton > button, .stDownloadButton > button {
     background: var(--scada-grey);
     border: 2px solid;
@@ -212,6 +226,11 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
     border-color: var(--scada-dark) var(--scada-light) var(--scada-light) var(--scada-dark);
     box-shadow: none;
     transform: translate(1px, 1px);
+}
+
+[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+    background: #e8c96e;
+    border-color: #fff1b7 #705400 #705400 #fff1b7;
 }
 
 [data-baseweb="select"] > div,
@@ -332,5 +351,15 @@ def render_message(title: str, text: str) -> None:
     st.markdown(
         f'<div class="scada-message"><strong>{escape(title)}:</strong> '
         f'{escape(text)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_event_banner(text: str, active: bool = True) -> None:
+    """Render an amber informational process-event banner."""
+
+    state_class = "" if active else " is-idle"
+    st.markdown(
+        f'<div class="scada-event-banner{state_class}">EVENT: {escape(text)}</div>',
         unsafe_allow_html=True,
     )

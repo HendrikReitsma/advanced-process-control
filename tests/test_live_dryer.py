@@ -5,9 +5,11 @@ from apc_lab.live_dryer import (
     INPUT_MIN,
     MAX_MOVE,
     MEASUREMENT_NOISE_STD,
+    NOMINAL_FEED_DRY_MATTER,
     NOMINAL_INPUTS,
     NOMINAL_OUTPUTS,
     ConstrainedDryerMPC,
+    FeedTankManager,
     LiveSprayDryer,
     steady_outputs,
 )
@@ -75,6 +77,87 @@ def test_noise_multiplier_scales_the_same_seeded_sensor_sample():
 
     assert np.allclose(high_offset, 2.0 * normal_offset)
     assert np.all(MEASUREMENT_NOISE_STD > 0)
+
+
+def test_tank_change_updates_feed_dry_matter_before_outputs_respond():
+    dryer = LiveSprayDryer()
+    dryer.set_feed_dry_matter(52.0)
+
+    dryer.advance(NOMINAL_INPUTS)
+
+    assert NOMINAL_FEED_DRY_MATTER < dryer.feed_dry_matter < 52.0
+    assert dryer.feed_dry_matter_target == 52.0
+
+
+def test_higher_feed_dry_matter_changes_true_outputs_in_expected_directions():
+    baseline = LiveSprayDryer()
+    tank_b_feed = LiveSprayDryer()
+    tank_b_feed.set_feed_dry_matter(52.0)
+
+    for _ in range(80):
+        baseline.advance(NOMINAL_INPUTS)
+        tank_b_feed.advance(NOMINAL_INPUTS)
+
+    assert tank_b_feed.true_outputs[0] > baseline.true_outputs[0]
+    assert tank_b_feed.true_outputs[1] > baseline.true_outputs[1]
+    assert tank_b_feed.true_outputs[2] < baseline.true_outputs[2]
+    assert tank_b_feed.true_outputs[3] < baseline.true_outputs[3]
+    assert baseline.true_outputs[2] - tank_b_feed.true_outputs[2] > 0.5
+    assert baseline.true_outputs[3] - tank_b_feed.true_outputs[3] > 0.004
+
+
+def test_larger_simulation_step_uses_stable_first_order_response():
+    dryer = LiveSprayDryer()
+    dryer.configure_time_step(5)
+    dryer.set_feed_dry_matter(52.0)
+
+    dryer.advance(NOMINAL_INPUTS)
+
+    assert dryer.dt == 5.0
+    assert dryer.delay_steps == 1
+    assert NOMINAL_FEED_DRY_MATTER < dryer.feed_dry_matter < 52.0
+    assert np.all(np.isfinite(dryer.true_outputs))
+
+
+def test_measurement_noise_remains_separate_from_tank_disturbance():
+    dryer = LiveSprayDryer(seed=55)
+    dryer.set_feed_dry_matter(48.5)
+    true_outputs = dryer.advance(NOMINAL_INPUTS)
+    measured_outputs = dryer.measure()
+
+    assert dryer.feed_dry_matter < NOMINAL_FEED_DRY_MATTER
+    assert np.array_equal(dryer.measure(enabled=False), true_outputs)
+    assert not np.array_equal(measured_outputs, true_outputs)
+    assert dryer.feed_dry_matter_target == 48.5
+
+
+def test_tank_events_are_deterministic_and_not_repeated_on_rerun():
+    first_manager = FeedTankManager(seed=71)
+    second_manager = FeedTankManager(seed=71)
+    first_manager.configure_automatic(True, 60, minute=0)
+    second_manager.configure_automatic(True, 60, minute=0)
+
+    first_event = first_manager.maybe_automatic_change(60)
+    second_event = second_manager.maybe_automatic_change(60)
+
+    assert first_event == second_event
+    assert first_event is not None
+    assert first_manager.maybe_automatic_change(60) is None
+    assert first_manager.next_auto_change_minute == 120
+
+
+def test_manual_and_automatic_tank_changes_select_new_tanks():
+    manager = FeedTankManager(seed=17)
+
+    manual_event = manager.change_to("Tank B", minute=4)
+    manager.configure_automatic(True, 30, minute=4)
+    automatic_event = manager.maybe_automatic_change(34)
+
+    assert manual_event is not None
+    assert manual_event.new_tank == "Tank B"
+    assert automatic_event is not None
+    assert automatic_event.event_type == "Automatic tank change"
+    assert automatic_event.new_tank != "Tank B"
 
 
 def test_multivariable_mpc_respects_move_and_input_limits():
