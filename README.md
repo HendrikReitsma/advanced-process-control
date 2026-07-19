@@ -8,6 +8,7 @@ spray-dryer simulation.
 > operational control.
 
 ![Live APC spray-dryer dashboard](docs/images/dashboard.png)
+![Live APC spray-dryer dashboard mollier](docs/images/mollier.png)
 
 ## Who This Is For
 
