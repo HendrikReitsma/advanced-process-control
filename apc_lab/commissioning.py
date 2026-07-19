@@ -22,7 +22,7 @@ from .live_dryer import (
     ConstrainedDryerMPC,
     LiveSprayDryer,
 )
-from .model_fitting import FittedDryerModel, simulate_dynamic_model
+from .model_fitting import FittedDryerModel
 
 PERIOD_ESTIMATION = "Estimation"
 PERIOD_VALIDATION = "Validation"
@@ -109,6 +109,50 @@ class TuningComparison:
     tuning_a: ComparisonRun
     tuning_b: ComparisonRun
     tank_change_minute: float
+
+
+def _simulate_dynamic_model(
+    model: FittedDryerModel,
+    inputs: np.ndarray,
+    initial_outputs: np.ndarray,
+    sample_minutes: float,
+) -> np.ndarray:
+    """Free-run a fitted model without requiring a cross-module helper import."""
+
+    inputs = np.asarray(inputs, dtype=float)
+    initial_outputs = np.asarray(initial_outputs, dtype=float)
+    if inputs.ndim != 2 or inputs.shape[1] != 3:
+        raise ValueError(f"inputs must have 3 columns: {INPUT_NAMES}")
+    if initial_outputs.shape != (4,):
+        raise ValueError(f"initial_outputs must have 4 values: {OUTPUT_NAMES}")
+    if sample_minutes <= 0:
+        raise ValueError("sample time must be positive")
+
+    delay_minutes = float(
+        getattr(
+            model,
+            "delay_minutes",
+            model.delay_steps * getattr(model, "sample_minutes", sample_minutes),
+        )
+    )
+    delay_steps = max(0, int(np.ceil(delay_minutes / sample_minutes)))
+    predictions = np.empty((len(inputs), 4), dtype=float)
+    if len(inputs) == 0:
+        return predictions
+    predictions[0] = initial_outputs
+    response_fraction = 1.0 - np.exp(-sample_minutes / model.output_tau)
+    for sample_index in range(1, len(inputs)):
+        delayed_index = sample_index - delay_steps
+        delayed_inputs = (
+            model.nominal_inputs if delayed_index < 0 else inputs[delayed_index]
+        )
+        steady_prediction = model.nominal_outputs + model.gain_matrix @ (
+            delayed_inputs - model.nominal_inputs
+        )
+        predictions[sample_index] = predictions[sample_index - 1] + response_fraction * (
+            steady_prediction - predictions[sample_index - 1]
+        )
+    return predictions
 
 
 def build_guided_plan(sample_minutes: float) -> list[ExperimentSample]:
@@ -305,7 +349,9 @@ def response_metrics(
     """Calculate free-run output-response metrics in engineering units."""
 
     outputs = np.asarray(outputs, dtype=float)
-    predictions = simulate_dynamic_model(model, inputs, outputs[0], sample_minutes)
+    predictions = _simulate_dynamic_model(
+        model, inputs, outputs[0], sample_minutes
+    )
     residual = outputs - predictions
     rmse = np.sqrt(np.mean(residual**2, axis=0))
     mae = np.mean(np.abs(residual), axis=0)
