@@ -120,6 +120,18 @@ def test_larger_simulation_step_uses_stable_first_order_response():
     assert np.all(np.isfinite(dryer.true_outputs))
 
 
+def test_controller_delay_remains_three_physical_minutes_across_scan_rates():
+    controller = ConstrainedDryerMPC()
+
+    controller.configure_time_step(1)
+    assert controller.delay_steps == 3
+    controller.configure_time_step(2)
+    assert controller.delay_steps == 2
+    controller.configure_time_step(5)
+    assert controller.delay_steps == 1
+    assert controller.delay_minutes == 3.0
+
+
 def test_measurement_noise_remains_separate_from_tank_disturbance():
     dryer = LiveSprayDryer(seed=55)
     dryer.set_feed_dry_matter(48.5)

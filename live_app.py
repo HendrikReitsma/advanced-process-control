@@ -4,6 +4,22 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from apc_lab.commissioning import (
+    PERIOD_ESTIMATION,
+    PERIOD_VALIDATION,
+    TuningPreset,
+    apply_model,
+    build_guided_plan,
+    compare_tunings,
+    diagnose_excitation,
+    model_from_controller,
+    rate_limited_inputs,
+    restore_builtin_model,
+    sample_record,
+    samples_to_dataframe,
+    split_estimation_validation,
+    validate_candidate,
+)
 from apc_lab.equations import (
     FEED_LINE_EQUATION,
     MEASUREMENT_EQUATION,
@@ -100,7 +116,7 @@ DEFAULT_OUTPUT_MAX = np.array(
         maximum_safe_humidity_ratio(DEFAULT_MAX_EXHAUST_TEMPERATURE),
     ]
 )
-CONTROLLER_VERSION = 5
+CONTROLLER_VERSION = 6
 SIMULATION_STATE_VERSION = 8
 FEED_DRY_MATTER_HISTORY_NAME = "Feed dry matter"
 FEED_TANK_HISTORY_NAME = "Feed tank"
@@ -108,6 +124,29 @@ INLET_HUMIDITY_HISTORY_NAME = "Inlet air humidity"
 WEATHER_STATE_HISTORY_NAME = "Weather state"
 TRUE_EXHAUST_TEMPERATURE_HISTORY_NAME = "True exhaust air temperature"
 TRUE_EXHAUST_HUMIDITY_HISTORY_NAME = "True exhaust air humidity"
+
+
+def empty_live_history() -> dict[str, list[object]]:
+    """Create bounded station history without coupling commissioning data to it."""
+
+    return {
+        "minute": [],
+        **{
+            name: []
+            for name in INPUT_NAMES
+            + OUTPUT_NAMES
+            + (
+                FEED_DRY_MATTER_HISTORY_NAME,
+                FEED_TANK_HISTORY_NAME,
+                INLET_HUMIDITY_HISTORY_NAME,
+                WEATHER_STATE_HISTORY_NAME,
+                TRUE_EXHAUST_TEMPERATURE_HISTORY_NAME,
+                TRUE_EXHAUST_HUMIDITY_HISTORY_NAME,
+            )
+        },
+    }
+
+
 def initialize() -> None:
     """Create or migrate the live plant and controller session state."""
 
@@ -163,22 +202,7 @@ def initialize() -> None:
         st.session_state.showcase_events = []
         st.session_state.showcase_handoff_notice = False
         st.session_state.showcase_handoff_pending = False
-        st.session_state.history = {
-            "minute": [],
-            **{
-                name: []
-                for name in INPUT_NAMES
-                + OUTPUT_NAMES
-                + (
-                    FEED_DRY_MATTER_HISTORY_NAME,
-                    FEED_TANK_HISTORY_NAME,
-                    INLET_HUMIDITY_HISTORY_NAME,
-                    WEATHER_STATE_HISTORY_NAME,
-                    TRUE_EXHAUST_TEMPERATURE_HISTORY_NAME,
-                    TRUE_EXHAUST_HUMIDITY_HISTORY_NAME,
-                )
-            },
-        }
+        st.session_state.history = empty_live_history()
     if "chart_run_id" not in st.session_state:
         st.session_state.chart_run_sequence = (
             st.session_state.get("chart_run_sequence", 0) + 1
@@ -198,7 +222,39 @@ def initialize() -> None:
     if st.session_state.get("controller_version") != CONTROLLER_VERSION:
         st.session_state.controller = ConstrainedDryerMPC()
         st.session_state.controller_version = CONTROLLER_VERSION
-        st.session_state.pop("fitted_model", None)
+        for key in (
+            "fitted_model",
+            "commissioning_candidate",
+            "commissioning_candidate_revision",
+            "commissioning_validation",
+            "commissioning_fit_data",
+            "commissioning_comparison",
+        ):
+            st.session_state.pop(key, None)
+        st.session_state.active_model_source = "Built-in model"
+        st.session_state.active_model_revision = "BUILT-IN"
+    commissioning_defaults = {
+        "workspace": "APC Station",
+        "commissioning_samples": [],
+        "commissioning_plan": [],
+        "commissioning_plan_index": 0,
+        "commissioning_collecting": False,
+        "commissioning_prepared": False,
+        "commissioning_candidate": None,
+        "commissioning_candidate_revision": None,
+        "commissioning_validation": None,
+        "commissioning_fit_data": None,
+        "commissioning_diagnostics": None,
+        "commissioning_revision_sequence": 0,
+        "commissioning_tuning_a": None,
+        "commissioning_tuning_b": None,
+        "commissioning_comparison": None,
+        "active_model_source": "Built-in model",
+        "active_model_revision": "BUILT-IN",
+    }
+    for key, value in commissioning_defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
 
 def reset() -> None:
@@ -235,6 +291,38 @@ def reset() -> None:
         "showcase_handoff_notice",
         "showcase_handoff_pending",
         "control_mode",
+        "workspace",
+        "commissioning_samples",
+        "commissioning_plan",
+        "commissioning_plan_index",
+        "commissioning_collecting",
+        "commissioning_prepared",
+        "commissioning_candidate",
+        "commissioning_candidate_revision",
+        "commissioning_validation",
+        "commissioning_fit_data",
+        "commissioning_diagnostics",
+        "commissioning_revision_sequence",
+        "commissioning_tuning_a",
+        "commissioning_tuning_b",
+        "commissioning_comparison",
+        "active_model_source",
+        "active_model_revision",
+        "commissioning_target_output",
+        "commissioning_target_value",
+        "commissioning_objective_weight",
+        "commissioning_move_weight",
+        "commissioning_prediction_horizon",
+        "commissioning_target_value_0",
+        "commissioning_target_value_1",
+        "commissioning_target_value_2",
+        "commissioning_target_value_3",
+        "commissioning_dataset_source",
+        "commissioning_upload",
+        "commissioning_upload_sample_minutes",
+        "commissioning_estimation_fraction",
+        "commissioning_max_delay_minutes",
+        "fitted_model",
     ):
         st.session_state.pop(key, None)
     initialize()
@@ -278,7 +366,111 @@ def record_showcase_event(event: ShowcaseEvent) -> None:
 
 
 def toggle_running() -> None:
+    if (
+        not st.session_state.running
+        and st.session_state.get("workspace") == "Commissioning Lab"
+        and st.session_state.get("commissioning_prepared", False)
+        and st.session_state.commissioning_plan_index
+        < len(st.session_state.commissioning_plan)
+    ):
+        st.session_state.commissioning_collecting = True
     st.session_state.running = not st.session_state.running
+
+
+def prepare_commissioning_experiment() -> None:
+    """Prepare a deterministic manual experiment from a reset plant state."""
+
+    sample_minutes = float(st.session_state.simulation_minutes_per_tick)
+    st.session_state.dryer = LiveSprayDryer()
+    st.session_state.dryer.configure_time_step(sample_minutes)
+    st.session_state.inputs = NOMINAL_INPUTS.copy()
+    st.session_state.true_outputs = NOMINAL_OUTPUTS.copy()
+    st.session_state.measurements = NOMINAL_OUTPUTS.copy()
+    st.session_state.minute = 0
+    st.session_state.history = empty_live_history()
+    st.session_state.feed_tank_manager = FeedTankManager()
+    st.session_state.tank_events = []
+    st.session_state.last_tank_event = None
+    st.session_state.weather_manager = InletWeatherManager()
+    st.session_state.weather_events = []
+    st.session_state.last_weather_event = None
+    st.session_state.chart_run_sequence = st.session_state.get(
+        "chart_run_sequence", 0
+    ) + 1
+    st.session_state.chart_run_id = st.session_state.chart_run_sequence
+    st.session_state.chart_last_sample_id = -1
+    st.session_state.chart_last_event_id = 0
+    st.session_state.chart_event_sequence = 0
+    st.session_state.chart_event_ids = []
+    st.session_state.weather_event_ids = []
+    st.session_state.chart_needs_snapshot = True
+    st.session_state.operating_map_last_sample_id = -1
+    st.session_state.operating_map_needs_snapshot = True
+    st.session_state.commissioning_plan = build_guided_plan(sample_minutes)
+    st.session_state.commissioning_plan_index = 0
+    st.session_state.commissioning_samples = []
+    st.session_state.commissioning_collecting = False
+    st.session_state.commissioning_prepared = True
+    st.session_state.commissioning_candidate = None
+    st.session_state.commissioning_candidate_revision = None
+    st.session_state.commissioning_validation = None
+    st.session_state.commissioning_fit_data = None
+    st.session_state.commissioning_diagnostics = None
+    st.session_state.commissioning_comparison = None
+    st.session_state.mode = "Manual"
+    st.session_state.control_mode = "Manual"
+    st.session_state.weather_mode = "Constant"
+    st.session_state.automatic_tank_changes = False
+    st.session_state.running = False
+
+
+def start_commissioning_collection() -> None:
+    """Start or resume the prepared experiment through the normal RUN state."""
+
+    if not st.session_state.commissioning_prepared:
+        return
+    if st.session_state.commissioning_plan_index >= len(
+        st.session_state.commissioning_plan
+    ):
+        return
+    st.session_state.commissioning_collecting = True
+    st.session_state.running = True
+    st.session_state.mode = "Manual"
+    st.session_state.control_mode = "Manual"
+
+
+def current_commissioning_tuning() -> TuningPreset:
+    output_name = st.session_state.commissioning_target_output
+    output_index = OUTPUT_NAMES.index(output_name)
+    return TuningPreset(
+        target_output_index=output_index,
+        target=float(st.session_state[f"commissioning_target_value_{output_index}"]),
+        objective_weight=float(st.session_state.commissioning_objective_weight),
+        move_weight=float(st.session_state.commissioning_move_weight),
+        prediction_horizon=int(st.session_state.commissioning_prediction_horizon),
+    )
+
+
+def apply_commissioning_tuning() -> None:
+    """Apply the current scalar tuning through the shared live MPC."""
+
+    tuning = current_commissioning_tuning()
+    controller = st.session_state.controller
+    controller.objective_weight = tuning.objective_weight
+    controller.move_weight = tuning.move_weight
+    controller.prediction_horizon = tuning.prediction_horizon
+    output_name = OUTPUT_NAMES[tuning.target_output_index]
+    st.session_state.objective_parameter = output_name
+    st.session_state.objective_mode = "Target"
+    st.session_state[f"objective_target_output_{tuning.target_output_index}"] = (
+        tuning.target
+    )
+
+
+def save_commissioning_tuning(slot: str) -> None:
+    st.session_state[f"commissioning_tuning_{slot.lower()}"] = (
+        current_commissioning_tuning()
+    )
 
 
 def widget_default(key: str, value: object) -> object | None:
@@ -290,6 +482,7 @@ def widget_default(key: str, value: object) -> object | None:
 def _set_showcase_widget_defaults() -> None:
     """Apply the known operator configuration used by the guided run."""
 
+    st.session_state.workspace = "APC Station"
     st.session_state.mode = "Manual"
     st.session_state.control_mode = "Manual"
     st.session_state.noise_enabled = True
@@ -696,89 +889,580 @@ validated correlation or operating limit for a real product or dryer.
         st.dataframe(interpretation_rows, width="stretch", hide_index=True)
 
 
-def render_model_fitting() -> None:
-    with st.expander("Fit the controller model to a dataset"):
+def render_commissioning_lab(
+    input_min: np.ndarray,
+    input_max: np.ndarray,
+    max_move: np.ndarray,
+    output_min: np.ndarray,
+    output_max: np.ndarray,
+    sample_minutes: float,
+    noise_enabled: bool,
+    noise_profile: str,
+) -> None:
+    """Render the focused data-to-controller commissioning workflow."""
+
+    prepared = bool(st.session_state.commissioning_prepared)
+    plan = st.session_state.commissioning_plan
+    plan_index = int(st.session_state.commissioning_plan_index)
+    collection_complete = prepared and plan_index >= len(plan)
+    candidate = st.session_state.commissioning_candidate
+    validation = st.session_state.commissioning_validation
+    tuning_a = st.session_state.commissioning_tuning_a
+    tuning_b = st.session_state.commissioning_tuning_b
+
+    render_status_strip(
+        [
+            (
+                "PROCESS",
+                "RUN" if st.session_state.running else "HOLD",
+                "normal" if st.session_state.running else "warning",
+            ),
+            ("CONTROL", "MANUAL", "neutral"),
+            (
+                "MODEL",
+                st.session_state.active_model_revision,
+                "normal" if st.session_state.active_model_revision != "BUILT-IN" else "neutral",
+            ),
+            ("SAMPLES", str(len(st.session_state.commissioning_samples)), "neutral"),
+            ("SCAN", f"{sample_minutes:g} MIN", "neutral"),
+        ]
+    )
+    render_message(
+        "COMMISSIONING WORKFLOW",
+        "1 Collect data  |  2 Fit candidate  |  3 Validate  |  "
+        "4 Apply predictor  |  5 Tune and compare",
+    )
+    if st.session_state.running:
+        next_action = (
+            "Collection is running. Watch the phase and sample counter below, "
+            "or press HOLD in the sidebar to pause."
+        )
+    elif not prepared:
+        next_action = (
+            "Start from RESET, choose the scan duration and sensor-noise setting "
+            "in the sidebar, then select PREPARE GUIDED EXPERIMENT."
+        )
+    elif not collection_complete:
+        next_action = "Select START / RESUME COLLECTION. The input steps are automatic."
+    elif candidate is None:
+        next_action = "The dataset is complete. Select FIT CANDIDATE MODEL in step 2."
+    elif validation is None:
+        next_action = "The candidate is fitted but inactive. Select VALIDATE CANDIDATE."
+    elif (
+        st.session_state.active_model_revision
+        != st.session_state.commissioning_candidate_revision
+    ):
+        next_action = "Validation is complete. Select APPLY TO MPC when ready."
+    elif tuning_a is None or tuning_b is None:
+        next_action = (
+            "The fitted predictor is active. Adjust tuning, save two alternatives "
+            "as A and B, then compare them."
+        )
+    else:
+        next_action = "Tuning A and B are ready. Select RUN FAIR A/B COMPARISON."
+    render_message("NEXT ACTION", next_action)
+
+    with st.expander("HOW TO USE THE COMMISSIONING LAB", expanded=True):
         st.markdown(
             """
-Upload timestamp-ordered CSV process data. The fitter estimates integer dead
-time, four output time constants, and the complete 4 x 3 gain matrix.
+1. **RESET and configure:** choose a 1, 2, or 5 minute scan and the desired
+   sensor-noise level in the sidebar. The scan duration is also the dataset
+   sample time.
+2. **Prepare and collect:** preparation creates a clean nominal experiment and
+   clears earlier lab samples. Start runs a fixed sequence of positive and
+   negative input steps in Manual mode. **HOLD** pauses; **RUN** resumes.
+3. **Fit:** the estimation samples create a candidate gain, time-constant, and
+   dead-time model. Fitting does not change the active MPC.
+4. **Validate and apply:** validation predicts data that was kept out of the
+   fit. Apply deliberately copies a validated candidate into the MPC predictor;
+   the simulated plant is never changed.
+5. **Tune and compare:** save two controller settings, then run the same tank
+   disturbance offline for both. The offline comparison does not move the live
+   process.
 
-Inputs must move independently enough to identify their separate effects. A
-useful dataset covers the relevant operating range and avoids long periods
-where all inputs move together. The fitted model updates the **controller
-predictor**; the simulated plant remains unchanged so model mismatch is visible.
+You can use an uploaded CSV instead of collecting guided data. Uploaded data
+must contain the seven MV/CV columns shown in the README and an explicit sample
+duration.
 """
         )
-        example_rng = np.random.default_rng(42)
-        example_inputs = np.tile(NOMINAL_INPUTS, (240, 1))
-        for k in range(0, 240, 20):
-            example_inputs[k:] += example_rng.uniform(-MAX_MOVE * 4, MAX_MOVE * 4)
-            example_inputs[k:] = np.clip(example_inputs[k:], INPUT_MIN, INPUT_MAX)
-        example_dryer = LiveSprayDryer(seed=42)
-        example_outputs = np.array([example_dryer.step(row) for row in example_inputs])
-        example_data = pd.DataFrame(
-            np.column_stack([example_inputs, example_outputs]),
-            columns=INPUT_NAMES + OUTPUT_NAMES,
+
+    render_section_title("1. COLLECT COMMISSIONING DATA")
+    st.caption(
+        "PREPARE builds the experiment but does not start it. START / RESUME "
+        "runs the normal simulation and records measured CVs while one MV at a "
+        "time is moved automatically. Tank and weather events remain disabled."
+    )
+    reset_ready = st.session_state.minute == 0 and not st.session_state.history["minute"]
+    prepare_col, run_col = st.columns([1, 1])
+    prepare_col.button(
+        "PREPARE GUIDED EXPERIMENT",
+        width="stretch",
+        on_click=prepare_commissioning_experiment,
+        disabled=not reset_ready or st.session_state.running,
+        help=(
+            "Create the deterministic estimation/validation step sequence and "
+            "clear previous Commissioning Lab samples. This does not start RUN."
+        ),
+    )
+    run_col.button(
+        "START / RESUME COLLECTION",
+        width="stretch",
+        type="primary",
+        on_click=start_commissioning_collection,
+        disabled=not prepared or collection_complete or st.session_state.running,
+        help=(
+            "Start or resume automatic Manual-mode MV excitation and record one "
+            "measurement row per simulation scan."
+        ),
+    )
+    if not reset_ready and not prepared:
+        st.info("Use RESET before preparing a new guided experiment.")
+    if prepared:
+        progress = 1.0 if not plan else min(1.0, plan_index / len(plan))
+        st.progress(progress)
+        if collection_complete:
+            st.success("Estimation and validation collection complete. Process is in HOLD.")
+        else:
+            current_step = plan[plan_index]
+            st.caption(
+                f"{current_step.period} | {current_step.phase} | "
+                f"sample {plan_index + 1} of {len(plan)}"
+            )
+    collected = samples_to_dataframe(st.session_state.commissioning_samples)
+    if not collected.empty:
+        period_counts = collected["Period"].value_counts()
+        st.write(
+            f"Estimation samples: **{int(period_counts.get(PERIOD_ESTIMATION, 0))}** | "
+            f"Validation samples: **{int(period_counts.get(PERIOD_VALIDATION, 0))}**"
         )
         st.download_button(
-            "Download example identification CSV",
-            example_data.to_csv(index=False),
-            "spray_dryer_identification_example.csv",
+            "DOWNLOAD COMMISSIONING CSV",
+            collected.to_csv(index=False),
+            "spray_dryer_commissioning.csv",
             "text/csv",
         )
-        uploaded = st.file_uploader("Upload process CSV", type="csv")
-        max_delay = st.slider("Maximum dead time to search (samples)", 0, 30, 10)
+
+    render_section_title("2. FIT CANDIDATE MODEL")
+    st.caption(
+        "Guided data uses its labelled Estimation and Validation periods. For an "
+        "uploaded CSV, the chronological estimation fraction keeps the later "
+        "samples separate for validation. FIT creates a candidate only."
+    )
+    source = st.radio(
+        "Dataset source",
+        ("Guided commissioning buffer", "Uploaded CSV"),
+        horizontal=True,
+        key="commissioning_dataset_source",
+    )
+    dataset: pd.DataFrame | None = collected if source.startswith("Guided") else None
+    fit_sample_minutes = float(sample_minutes)
+    estimation_fraction = 0.7
+    if source == "Uploaded CSV":
+        uploaded = st.file_uploader(
+            "Upload timestamp-ordered CSV",
+            type="csv",
+            key="commissioning_upload",
+        )
+        fit_sample_minutes = float(
+            st.number_input(
+                "Uploaded-data sample duration (minutes)",
+                min_value=0.1,
+                max_value=60.0,
+                value=1.0,
+                step=0.1,
+                key="commissioning_upload_sample_minutes",
+            )
+        )
+        estimation_fraction = st.slider(
+            "Chronological estimation fraction",
+            0.5,
+            0.9,
+            0.7,
+            0.05,
+            key="commissioning_estimation_fraction",
+        )
         if uploaded is not None:
             try:
                 dataset = pd.read_csv(uploaded)
-                st.dataframe(dataset.head(20), width="stretch")
-                fit_inputs, fit_outputs = arrays_from_dataframe(dataset)
-                if st.button("Fit and use model"):
-                    fitted = fit_dynamic_model(
-                        fit_inputs, fit_outputs, max_delay=max_delay
-                    )
-                    controller = st.session_state.controller
-                    controller.gain_matrix = fitted.gain_matrix.copy()
-                    controller.output_tau = fitted.output_tau.copy()
-                    controller.delay_steps = fitted.delay_steps
-                    controller.nominal_inputs = fitted.nominal_inputs.copy()
-                    controller.nominal_outputs = fitted.nominal_outputs.copy()
-                    st.session_state.fitted_model = fitted
-                    st.success(f"Fitted model applied using {fitted.samples} samples.")
             except Exception as error:
-                st.error(str(error))
-        if "fitted_model" in st.session_state:
-            fitted = st.session_state.fitted_model
-            st.write(f"Estimated dead time: **{fitted.delay_steps} samples**")
-            st.write(
-                "Dataset baseline inputs: "
-                + ", ".join(
-                    f"{name}={value:.3f}"
-                    for name, value in zip(INPUT_NAMES, fitted.nominal_inputs)
-                )
+                st.error(f"Could not read CSV: {error}")
+    elif not collected.empty:
+        sample_values = collected["Sample duration (min)"].astype(float).unique()
+        if len(sample_values) == 1:
+            fit_sample_minutes = float(sample_values[0])
+    max_delay_minutes = st.slider(
+        "Maximum dead time to search (minutes)",
+        0,
+        30,
+        10,
+        key="commissioning_max_delay_minutes",
+    )
+    st.caption(
+        "Maximum dead time is the longest input-to-output delay the fitter is "
+        "allowed to test. Ten minutes is a sensible starting value for this lab."
+    )
+    if dataset is not None and not dataset.empty:
+        st.dataframe(dataset.head(12), width="stretch", hide_index=True)
+    guided_dataset_incomplete = (
+        source == "Guided commissioning buffer" and not collection_complete
+    )
+    fit_requested = st.button(
+        "FIT CANDIDATE MODEL",
+        type="primary",
+        disabled=(
+            st.session_state.running
+            or dataset is None
+            or dataset.empty
+            or guided_dataset_incomplete
+        ),
+        help=(
+            "Estimate the 4 x 3 gains, one time constant per CV, and one shared "
+            "dead time from Estimation data. The active MPC remains unchanged."
+        ),
+    )
+    if fit_requested and dataset is not None:
+        try:
+            estimation_data, validation_data = split_estimation_validation(
+                dataset, estimation_fraction
             )
-            fitted_rows = []
-            for output_index, output_name in enumerate(OUTPUT_NAMES):
-                fitted_rows.append(
-                    {
-                        "Output": output_name,
-                        "Estimated tau": fitted.output_tau[output_index],
-                        "Derivative RMSE": fitted.rmse[output_index],
-                        **{
-                            f"Gain from {name}": fitted.gain_matrix[output_index, i]
-                            for i, name in enumerate(INPUT_NAMES)
-                        },
-                    }
+            estimation_inputs, estimation_outputs = arrays_from_dataframe(
+                estimation_data
+            )
+            validation_inputs, validation_outputs = arrays_from_dataframe(
+                validation_data
+            )
+            diagnostics = diagnose_excitation(estimation_inputs, estimation_outputs)
+            st.session_state.commissioning_diagnostics = diagnostics
+            if diagnostics.blocking_errors:
+                st.session_state.commissioning_candidate = None
+                st.session_state.commissioning_validation = None
+            else:
+                maximum_delay_steps = int(
+                    np.ceil(max_delay_minutes / fit_sample_minutes)
                 )
-            st.dataframe(fitted_rows, width="stretch", hide_index=True)
-            if st.button("Restore built-in controller model"):
-                controller = st.session_state.controller
-                controller.gain_matrix = GAIN_MATRIX.copy()
-                controller.output_tau = OUTPUT_TAU.copy()
-                controller.delay_steps = 3
-                controller.nominal_inputs = NOMINAL_INPUTS.copy()
-                controller.nominal_outputs = NOMINAL_OUTPUTS.copy()
-                st.session_state.pop("fitted_model", None)
+                candidate = fit_dynamic_model(
+                    estimation_inputs,
+                    estimation_outputs,
+                    max_delay=maximum_delay_steps,
+                    dt=fit_sample_minutes,
+                )
+                st.session_state.commissioning_revision_sequence += 1
+                revision = (
+                    f"FIT-{st.session_state.commissioning_revision_sequence:03d}"
+                )
+                st.session_state.commissioning_candidate = candidate
+                st.session_state.commissioning_candidate_revision = revision
+                st.session_state.commissioning_validation = None
+                st.session_state.commissioning_fit_data = {
+                    "estimation_data": estimation_data,
+                    "validation_data": validation_data,
+                    "estimation_inputs": estimation_inputs,
+                    "estimation_outputs": estimation_outputs,
+                    "validation_inputs": validation_inputs,
+                    "validation_outputs": validation_outputs,
+                    "sample_minutes": fit_sample_minutes,
+                }
+                st.success(f"Candidate {revision} fitted. The active MPC model is unchanged.")
+        except Exception as error:
+            st.error(str(error))
+
+    diagnostics = st.session_state.commissioning_diagnostics
+    if diagnostics is not None:
+        for message in diagnostics.blocking_errors:
+            st.error(message)
+        for message in diagnostics.warnings:
+            st.warning(message)
+        st.caption(
+            f"MV matrix rank {diagnostics.input_rank}/3 | "
+            f"condition number {diagnostics.condition_number:.1f}"
+        )
+
+    candidate = st.session_state.commissioning_candidate
+    validation = st.session_state.commissioning_validation
+    if candidate is not None:
+        model_rows = []
+        for output_index, output_name in enumerate(OUTPUT_NAMES):
+            model_rows.append(
+                {
+                    "Output": output_name,
+                    "Time constant (min)": candidate.output_tau[output_index],
+                    "Derivative-fit RMSE": candidate.rmse[output_index],
+                    **{
+                        f"Gain from {name}": candidate.gain_matrix[output_index, index]
+                        for index, name in enumerate(INPUT_NAMES)
+                    },
+                }
+            )
+        st.dataframe(model_rows, width="stretch", hide_index=True)
+        st.caption(
+            f"Candidate {st.session_state.commissioning_candidate_revision} | "
+            f"dead time {candidate.delay_minutes:.2f} min "
+            f"({candidate.delay_steps} fitted samples) | derivative-fit RMSE is "
+            "the regression error, not free-run output error."
+        )
+
+    render_section_title("3. VALIDATE AND APPLY")
+    st.markdown(
+        "**VALIDATE** tests free-run predictions on separate data. "
+        "**APPLY TO MPC** activates the validated predictor. "
+        "**RESTORE BUILT-IN** removes the fitted predictor from the controller. "
+        "All three actions require process HOLD."
+    )
+    validate_col, apply_col, restore_col = st.columns(3)
+    validate_requested = validate_col.button(
+        "VALIDATE CANDIDATE",
+        width="stretch",
+        disabled=st.session_state.running or candidate is None,
+        help=(
+            "Generate measured-versus-predicted responses and separate "
+            "estimation/validation error metrics. This does not activate the model."
+        ),
+    )
+    if validate_requested:
+        fit_data = st.session_state.commissioning_fit_data
+        try:
+            st.session_state.commissioning_validation = validate_candidate(
+                candidate,
+                fit_data["estimation_inputs"],
+                fit_data["estimation_outputs"],
+                fit_data["validation_inputs"],
+                fit_data["validation_outputs"],
+                fit_data["sample_minutes"],
+            )
+            validation = st.session_state.commissioning_validation
+        except Exception as error:
+            st.error(str(error))
+    apply_requested = apply_col.button(
+        "APPLY TO MPC",
+        width="stretch",
+        type="primary",
+        disabled=st.session_state.running or candidate is None or validation is None,
+        help=(
+            "Copy the validated candidate into the shared MPC predictor. The "
+            "synthetic plant and collected data are unchanged."
+        ),
+    )
+    if apply_requested:
+        apply_model(st.session_state.controller, candidate)
+        st.session_state.active_model_source = "Validated fitted model"
+        st.session_state.active_model_revision = (
+            st.session_state.commissioning_candidate_revision
+        )
+        st.success("Validated candidate applied to the MPC predictor only.")
+    restore_requested = restore_col.button(
+        "RESTORE BUILT-IN",
+        width="stretch",
+        disabled=(
+            st.session_state.running
+            or st.session_state.active_model_revision == "BUILT-IN"
+        ),
+        help="Restore every built-in MPC predictor parameter.",
+    )
+    if restore_requested:
+        restore_builtin_model(st.session_state.controller)
+        st.session_state.active_model_source = "Built-in model"
+        st.session_state.active_model_revision = "BUILT-IN"
+        st.success("Built-in MPC predictor restored. The candidate remains available.")
+    render_message(
+        "MODEL LIFECYCLE",
+        f"Active: {st.session_state.active_model_source} "
+        f"[{st.session_state.active_model_revision}] | "
+        f"Candidate: {st.session_state.commissioning_candidate_revision or '--'} | "
+        f"Validation: {'complete' if validation is not None else 'required'}",
+    )
+
+    if validation is not None:
+        metric_rows = []
+        for output_index, output_name in enumerate(OUTPUT_NAMES):
+            metric_rows.append(
+                {
+                    "Output": output_name,
+                    "Estimation RMSE": validation.estimation.rmse[output_index],
+                    "Validation RMSE": validation.validation.rmse[output_index],
+                    "Estimation MAE": validation.estimation.mae[output_index],
+                    "Validation MAE": validation.validation.mae[output_index],
+                    "Estimation fit (%)": validation.estimation.fit_percent[output_index],
+                    "Validation fit (%)": validation.validation.fit_percent[output_index],
+                    "Unit": OUTPUT_UNITS[output_index],
+                }
+            )
+        st.dataframe(metric_rows, width="stretch", hide_index=True)
+        fit_data = st.session_state.commissioning_fit_data
+        estimation_outputs = fit_data["estimation_outputs"]
+        validation_outputs = fit_data["validation_outputs"]
+        split = len(estimation_outputs)
+        for output_index, output_name in enumerate(OUTPUT_NAMES):
+            overlay = pd.DataFrame(
+                {
+                    "Measured": np.r_[
+                        estimation_outputs[:, output_index],
+                        validation_outputs[:, output_index],
+                    ],
+                    "Predicted": np.r_[
+                        validation.estimation.predictions[:, output_index],
+                        validation.validation.predictions[:, output_index],
+                    ],
+                    "Period": [PERIOD_ESTIMATION] * split
+                    + [PERIOD_VALIDATION] * len(validation_outputs),
+                }
+            )
+            st.caption(f"{output_name} measured versus free-run predicted")
+            st.line_chart(overlay[["Measured", "Predicted"]], height=180)
+        st.caption(
+            f"The chronological boundary is after sample {split}. Metrics above "
+            "report estimation and validation periods separately."
+        )
+
+    render_section_title("4. TUNE THE CURRENT MPC")
+    st.caption(
+        "Choose the CV that should follow a target. A higher CV tracking weight "
+        "pushes harder toward that target. A higher MV move penalty gives smoother, "
+        "slower commands. A longer prediction horizon looks further ahead but costs "
+        "more calculation. The control horizon remains fixed."
+    )
+    controller = st.session_state.controller
+    target_output = st.selectbox(
+        "Target-controlled CV",
+        OUTPUT_NAMES,
+        index=widget_default("commissioning_target_output", 2),
+        key="commissioning_target_output",
+    )
+    target_index = OUTPUT_NAMES.index(target_output)
+    target_key = f"commissioning_target_value_{target_index}"
+    target_value = st.number_input(
+        f"{target_output} target ({OUTPUT_UNITS[target_index]})",
+        value=widget_default(target_key, float(NOMINAL_OUTPUTS[target_index])),
+        key=target_key,
+    )
+    st.session_state.commissioning_target_value = float(target_value)
+    tuning_columns = st.columns(3)
+    tuning_columns[0].number_input(
+        "CV tracking weight",
+        min_value=1.0,
+        max_value=5000.0,
+        value=widget_default(
+            "commissioning_objective_weight", float(controller.objective_weight)
+        ),
+        step=10.0,
+        key="commissioning_objective_weight",
+    )
+    tuning_columns[1].number_input(
+        "MV move penalty",
+        min_value=0.001,
+        max_value=10.0,
+        value=widget_default(
+            "commissioning_move_weight", float(controller.move_weight)
+        ),
+        step=0.01,
+        format="%.3f",
+        key="commissioning_move_weight",
+    )
+    tuning_columns[2].number_input(
+        "Prediction horizon (scans)",
+        min_value=max(5, controller.control_horizon),
+        max_value=40,
+        value=widget_default(
+            "commissioning_prediction_horizon", int(controller.prediction_horizon)
+        ),
+        step=1,
+        key="commissioning_prediction_horizon",
+    )
+    apply_tuning_col, save_a_col, save_b_col = st.columns(3)
+    apply_tuning_col.button(
+        "APPLY TUNING TO MPC",
+        width="stretch",
+        on_click=apply_commissioning_tuning,
+        disabled=st.session_state.running,
+        help=(
+            "Use these values in the shared live MPC. The process must be in HOLD."
+        ),
+    )
+    save_a_col.button(
+        "SAVE AS TUNING A",
+        width="stretch",
+        on_click=save_commissioning_tuning,
+        args=("a",),
+        help="Store the displayed settings as comparison preset A; do not apply them.",
+    )
+    save_b_col.button(
+        "SAVE AS TUNING B",
+        width="stretch",
+        on_click=save_commissioning_tuning,
+        args=("b",),
+        help="Store the displayed settings as comparison preset B; do not apply them.",
+    )
+    tuning_a = st.session_state.commissioning_tuning_a
+    tuning_b = st.session_state.commissioning_tuning_b
+    st.caption(
+        f"Tuning A: {tuning_a or '--'} | Tuning B: {tuning_b or '--'}"
+    )
+
+    render_section_title("5. COMPARE TUNINGS")
+    st.caption(
+        "Both presets start from fresh identical plant/controller state and use "
+        "the same active predictor, seed, noise, Tank C disturbance, constraints, "
+        "and no weather event. Lower recovery time and error are better; zero "
+        "constraint violations is preferred. MV movement shows the cost of a more "
+        "aggressive response. The shared live session is not changed."
+    )
+    compare_requested = st.button(
+        "RUN FAIR A/B COMPARISON",
+        type="primary",
+        disabled=st.session_state.running or tuning_a is None or tuning_b is None,
+        help=(
+            "Run both saved presets offline from identical initial conditions. "
+            "This does not advance or modify the live process."
+        ),
+    )
+    if compare_requested:
+        try:
+            st.session_state.commissioning_comparison = compare_tunings(
+                tuning_a,
+                tuning_b,
+                model_from_controller(st.session_state.controller),
+                output_min,
+                output_max,
+                input_min,
+                input_max,
+                max_move,
+                sample_minutes,
+                NOISE_MULTIPLIERS[noise_profile] if noise_enabled else 0.0,
+            )
+        except Exception as error:
+            st.error(str(error))
+    comparison = st.session_state.commissioning_comparison
+    if comparison is not None:
+        rows = []
+        for label, run in (("Tuning A", comparison.tuning_a), ("Tuning B", comparison.tuning_b)):
+            metrics = run.metrics
+            rows.append(
+                {
+                    "Preset": label,
+                    "Recovery (min)": metrics.recovery_minutes,
+                    "Target CV IAE": metrics.integrated_absolute_error,
+                    "Normalized CV error": metrics.normalized_cv_error,
+                    "Max normalized constraint violation": metrics.maximum_constraint_violation,
+                    "Constraint violation count": metrics.constraint_violation_count,
+                    "Normalized MV movement": metrics.normalized_mv_movement,
+                }
+            )
+        st.dataframe(rows, width="stretch", hide_index=True)
+        output_chart = pd.DataFrame({"Minute": comparison.tuning_a.minutes})
+        input_chart = pd.DataFrame({"Minute": comparison.tuning_a.minutes})
+        for label, run in (("A", comparison.tuning_a), ("B", comparison.tuning_b)):
+            for index, name in enumerate(OUTPUT_NAMES):
+                output_chart[f"{label} {name}"] = run.outputs[:, index]
+            for index, name in enumerate(INPUT_NAMES):
+                input_chart[f"{label} {name}"] = run.inputs[:, index]
+        st.caption("Controlled-variable responses")
+        st.line_chart(output_chart.set_index("Minute"), height=260)
+        st.caption("Manipulated-variable movement")
+        st.line_chart(input_chart.set_index("Minute"), height=240)
+    render_message(
+        "NEXT STEP",
+        "Return to APC Station to operate the active model and tuning, then use "
+        "the existing APC Showcase after a normal RESET.",
+    )
 
 
 initialize()
@@ -788,6 +1472,20 @@ showcase: ShowcaseState = st.session_state.showcase
 
 with st.sidebar:
     render_sidebar_title("OPERATOR STATION")
+    workspace = st.radio(
+        "Workspace",
+        ("APC Station", "Commissioning Lab"),
+        index=widget_default("workspace", 0),
+        horizontal=True,
+        key="workspace",
+        disabled=showcase.engaged,
+    )
+    commissioning_workspace = workspace == "Commissioning Lab"
+    if commissioning_workspace:
+        st.session_state.mode = "Manual"
+        st.session_state.control_mode = "Manual"
+        st.session_state.weather_mode = "Constant"
+        st.session_state.automatic_tank_changes = False
     render_sidebar_title("APC SHOWCASE")
     if not showcase.engaged:
         st.button(
@@ -796,11 +1494,15 @@ with st.sidebar:
             type="primary",
             on_click=start_showcase,
             disabled=(
+                commissioning_workspace
+                or
                 st.session_state.minute != 0
                 or bool(st.session_state.history["minute"])
                 or st.session_state.get("showcase_handoff_notice", False)
             ),
         )
+        if commissioning_workspace:
+            st.caption("Showcase is available from APC Station after RESET.")
     else:
         st.button("STOP SHOWCASE", width="stretch", on_click=stop_showcase)
         st.caption("Guided sequence active | HOLD remains available")
@@ -814,6 +1516,16 @@ with st.sidebar:
             ("Manual", "APC"),
             index=1 if mode == "APC" else 0,
             key=f"showcase_mode_{showcase.phase.value}",
+            horizontal=True,
+            disabled=True,
+        )
+    elif commissioning_workspace:
+        mode = "Manual"
+        st.radio(
+            "Control mode",
+            ("Manual", "APC"),
+            index=0,
+            key="commissioning_control_mode_display",
             horizontal=True,
             disabled=True,
         )
@@ -831,7 +1543,17 @@ with st.sidebar:
         "RUN" if not st.session_state.running else "HOLD",
         width="stretch",
         on_click=toggle_running,
-        disabled=showcase.complete,
+        disabled=(
+            showcase.complete
+            or (
+                commissioning_workspace
+                and (
+                    not st.session_state.commissioning_prepared
+                    or st.session_state.commissioning_plan_index
+                    >= len(st.session_state.commissioning_plan)
+                )
+            )
+        ),
     )
     right.button(
         "RESET", width="stretch", on_click=reset, disabled=showcase.engaged
@@ -864,7 +1586,7 @@ with st.sidebar:
         index=widget_default("simulation_minutes_per_tick", 0),
         format_func=lambda minutes: f"{minutes} minute{'s' if minutes != 1 else ''}",
         key="simulation_minutes_per_tick",
-        disabled=showcase.engaged,
+        disabled=showcase.engaged or st.session_state.commissioning_prepared,
     )
     st.session_state.dryer.configure_time_step(simulation_minutes_per_tick)
     st.session_state.controller.configure_time_step(simulation_minutes_per_tick)
@@ -875,7 +1597,7 @@ with st.sidebar:
         WEATHER_MODES,
         index=widget_default("weather_mode", 0),
         key="weather_mode",
-        disabled=showcase.engaged,
+        disabled=showcase.engaged or commissioning_workspace,
     )
     weather_manager.configure_mode(weather_mode, st.session_state.minute)
     st.session_state.dryer.set_inlet_humidity(weather_manager.inlet_humidity)
@@ -884,7 +1606,7 @@ with st.sidebar:
         width="stretch",
         type="primary",
         on_click=trigger_humid_weather,
-        disabled=showcase.engaged,
+        disabled=showcase.engaged or commissioning_workspace,
     )
     st.caption(
         f"Humidity increase: +{HUMID_WEATHER_INCREASE:.4f} {INLET_HUMIDITY_UNIT}"
@@ -893,7 +1615,7 @@ with st.sidebar:
     render_sidebar_title("FEED SUPPLY")
     automatic_tank_checkbox_args: dict[str, object] = {
         "key": "automatic_tank_changes",
-        "disabled": showcase.engaged,
+        "disabled": showcase.engaged or commissioning_workspace,
     }
     automatic_tank_default = widget_default("automatic_tank_changes", False)
     if automatic_tank_default is not None:
@@ -909,14 +1631,16 @@ with st.sidebar:
         widget_default("automatic_tank_interval", 60),
         5,
         key="automatic_tank_interval",
-        disabled=showcase.engaged or not automatic_tank_changes,
+        disabled=(
+            showcase.engaged or commissioning_workspace or not automatic_tank_changes
+        ),
     )
     tank_manager.configure_automatic(
         automatic_tank_changes,
         automatic_tank_interval,
         st.session_state.minute,
     )
-    render_feed_tank_command(disabled=showcase.engaged)
+    render_feed_tank_command(disabled=showcase.engaged or commissioning_workspace)
 
     render_sidebar_title("OPTIMIZATION")
     objective_parameter = st.selectbox(
@@ -924,7 +1648,7 @@ with st.sidebar:
         INPUT_NAMES + OUTPUT_NAMES,
         index=widget_default("objective_parameter", 6),
         key="objective_parameter",
-        disabled=showcase.engaged,
+        disabled=showcase.engaged or commissioning_workspace,
     )
     objective_mode = st.radio(
         "Goal",
@@ -932,7 +1656,7 @@ with st.sidebar:
         index=widget_default("objective_mode", 0),
         key="objective_mode",
         horizontal=True,
-        disabled=showcase.engaged,
+        disabled=showcase.engaged or commissioning_workspace,
     ).lower()
     if objective_parameter in INPUT_NAMES:
         objective_group = "input"
@@ -964,7 +1688,7 @@ with st.sidebar:
             ),
             float(objective_step),
             key=f"objective_target_{objective_group}_{objective_index}",
-            disabled=showcase.engaged,
+            disabled=showcase.engaged or commissioning_workspace,
         )
 
     with st.expander("Manual MV commands", expanded=mode == "Manual"):
@@ -976,7 +1700,7 @@ with st.sidebar:
                     float(INPUT_MAX[i]),
                     widget_default(f"input_{i}", float(NOMINAL_INPUTS[i])),
                     key=f"input_{i}",
-                    disabled=showcase.engaged,
+                    disabled=showcase.engaged or st.session_state.commissioning_collecting,
                 )
                 for i in range(3)
             ]
@@ -990,7 +1714,7 @@ with st.sidebar:
         for i, name in enumerate(INPUT_NAMES):
             input_enabled_checkbox_args: dict[str, object] = {
                 "key": f"enabled_{i}",
-                "disabled": showcase.engaged,
+                "disabled": showcase.engaged or commissioning_workspace,
             }
             input_enabled_default = widget_default(f"enabled_{i}", True)
             if input_enabled_default is not None:
@@ -1008,7 +1732,7 @@ with st.sidebar:
                     (float(INPUT_MIN[i]), float(INPUT_MAX[i])),
                 ),
                 key=f"input_constraint_{i}",
-                disabled=showcase.engaged,
+                disabled=showcase.engaged or commissioning_workspace,
             )
             input_min[i], input_max[i] = selected
             max_move[i] = st.slider(
@@ -1017,7 +1741,7 @@ with st.sidebar:
                 float(MAX_MOVE[i] * 3),
                 widget_default(f"max_move_{i}", float(MAX_MOVE[i])),
                 key=f"max_move_{i}",
-                disabled=showcase.engaged,
+                disabled=showcase.engaged or commissioning_workspace,
             )
 
     with st.expander("CV constraints"):
@@ -1040,7 +1764,7 @@ with st.sidebar:
                 ),
                 ranges[i][2],
                 key=f"constraint_{i}",
-                disabled=showcase.engaged,
+                disabled=showcase.engaged or commissioning_workspace,
             )
             output_min[i], output_max[i] = selected
         derived_humidity_max = maximum_safe_humidity_ratio(output_max[0])
@@ -1051,7 +1775,7 @@ with st.sidebar:
             widget_default("constraint_3_lower", float(DEFAULT_OUTPUT_MIN[3])),
             ranges[3][2],
             key="constraint_3_lower",
-            disabled=showcase.engaged,
+            disabled=showcase.engaged or commissioning_workspace,
         )
         output_max[3] = derived_humidity_max
         st.caption(
@@ -1062,8 +1786,15 @@ with st.sidebar:
 
 
 render_title_bar(
-    "SPRAY DRYER APC TRAINER",
-    "SIM-01  |  Multivariable control learning station  |  "
+    "SPRAY DRYER COMMISSIONING LAB"
+    if commissioning_workspace
+    else "SPRAY DRYER APC TRAINER",
+    (
+        "DATA-TO-MODEL WORKFLOW"
+        if commissioning_workspace
+        else "SIM-01  |  Multivariable control learning station"
+    )
+    + "  |  "
     f"{simulation_minutes_per_tick} minute"
     f"{'s' if simulation_minutes_per_tick != 1 else ''} per scan",
 )
@@ -1071,13 +1802,35 @@ render_title_bar(
 
 @st.fragment(run_every=1.0 if st.session_state.running else None)
 def live_panel() -> None:
+    tank_manager: FeedTankManager = st.session_state.feed_tank_manager
+    weather_manager: InletWeatherManager = st.session_state.weather_manager
+    showcase: ShowcaseState = st.session_state.showcase
     if st.session_state.running:
         event_minute = st.session_state.minute + simulation_minutes_per_tick
+        guided_sample = None
+        if (
+            commissioning_workspace
+            and st.session_state.commissioning_collecting
+            and st.session_state.commissioning_plan_index
+            < len(st.session_state.commissioning_plan)
+        ):
+            guided_sample = st.session_state.commissioning_plan[
+                st.session_state.commissioning_plan_index
+            ]
         if showcase.engaged:
             actions = showcase.advance(event_minute, running=True)
             apply_showcase_actions(actions, event_minute)
         effective_mode = st.session_state.control_mode
-        if effective_mode == "Manual":
+        if guided_sample is not None:
+            st.session_state.inputs = rate_limited_inputs(
+                st.session_state.inputs,
+                guided_sample.target_inputs,
+                simulation_minutes_per_tick,
+                input_min,
+                input_max,
+                max_move,
+            )
+        elif effective_mode == "Manual":
             st.session_state.inputs = manual_inputs.copy()
         else:
             st.session_state.inputs = st.session_state.controller.move(
@@ -1094,7 +1847,7 @@ def live_panel() -> None:
                 max_move * simulation_minutes_per_tick,
                 input_enabled,
             )
-        if not showcase.engaged:
+        if not showcase.engaged and not commissioning_workspace:
             record_tank_event(tank_manager.maybe_automatic_change(event_minute))
         record_weather_event(weather_manager.advance(event_minute))
         st.session_state.dryer.set_inlet_humidity(weather_manager.inlet_humidity)
@@ -1129,6 +1882,22 @@ def live_panel() -> None:
         st.session_state.history[TRUE_EXHAUST_HUMIDITY_HISTORY_NAME].append(
             float(st.session_state.true_outputs[3])
         )
+        if guided_sample is not None:
+            st.session_state.commissioning_samples.append(
+                sample_record(
+                    event_minute,
+                    simulation_minutes_per_tick,
+                    guided_sample,
+                    st.session_state.inputs,
+                    st.session_state.measurements,
+                )
+            )
+            st.session_state.commissioning_plan_index += 1
+            if st.session_state.commissioning_plan_index >= len(
+                st.session_state.commissioning_plan
+            ):
+                st.session_state.commissioning_collecting = False
+                st.session_state.running = False
         for name in (
             INPUT_NAMES
             + OUTPUT_NAMES
@@ -1145,6 +1914,19 @@ def live_panel() -> None:
         st.session_state.history["minute"] = st.session_state.history["minute"][-120:]
         if st.session_state.pop("showcase_handoff_pending", False):
             st.rerun(scope="app")
+
+    if commissioning_workspace:
+        render_commissioning_lab(
+            input_min,
+            input_max,
+            max_move,
+            output_min,
+            output_max,
+            simulation_minutes_per_tick,
+            noise_enabled,
+            noise_profile,
+        )
+        return
 
     controller = st.session_state.controller
     process_state = "normal" if st.session_state.running else "warning"
@@ -1597,7 +2379,8 @@ def live_panel() -> None:
         )
         render_message(
             "MPC STATUS",
-            f"{solver_text} | limiting: {controller.last_limiting_constraint} | next: {next_moves}",
+            f"{solver_text} | model: {st.session_state.active_model_revision} | "
+            f"limiting: {controller.last_limiting_constraint} | next: {next_moves}",
         )
         if objective_group == "input" and not input_enabled[objective_index]:
             st.warning(
@@ -1613,6 +2396,5 @@ def live_panel() -> None:
 
 
 live_panel()
-render_model_explanation()
-if not showcase.engaged:
-    render_model_fitting()
+if not commissioning_workspace:
+    render_model_explanation()

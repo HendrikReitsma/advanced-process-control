@@ -19,6 +19,8 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] { font-family: Ta
 [data-testid="stSidebar"] { border-right: 1px solid #737373; }
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p, [data-testid="stSidebar"] label, [data-testid="stSidebar"] span, [data-testid="stSidebar"] [data-baseweb="select"] * { color: #111 !important; }
 [data-testid="stSidebar"] [data-baseweb="select"] svg { fill: #111 !important; }
+[data-testid="stMainBlockContainer"] [data-testid="stCaptionContainer"], [data-testid="stMainBlockContainer"] [data-testid="stCaptionContainer"] *, [data-testid="stMainBlockContainer"] [data-testid="stMarkdownContainer"] p, [data-testid="stMainBlockContainer"] label, [data-testid="stMainBlockContainer"] [data-baseweb="select"] *, [data-testid="stMainBlockContainer"] [data-baseweb="input"] input { color: #111 !important; }
+[data-testid="stMainBlockContainer"] [data-testid="stDataFrame"] * { color: #111 !important; }
 [data-testid="stSidebarUserContent"] { padding-top: 0.7rem; }
 #MainMenu, footer, [data-testid="stDecoration"] { visibility: hidden; }
 

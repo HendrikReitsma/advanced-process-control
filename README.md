@@ -53,6 +53,76 @@ future behavior, solve the selected Target, Maximize, or Minimize objective,
 apply the first move, and solve again. Each input has an operating range, move
 limit, and enable/freeze switch.
 
+Use the top-level **Workspace** selector to move between normal **APC Station**
+operation and the focused **Commissioning Lab**. Both workspaces use the same
+plant, controller, RUN/HOLD state, and Streamlit session; the Commissioning Lab
+does not add another simulation lifecycle.
+
+### 3. Commissioning Lab
+
+The Commissioning Lab supplies the missing bridge from process data to a
+working controller:
+
+1. **Collect data:** from a reset baseline, run a deterministic Manual-mode
+   experiment that moves one MV at a time in positive and negative directions.
+   Estimation and validation samples are labelled separately and stored in a
+   dedicated buffer rather than the bounded Process Trends history. HOLD pauses
+   collection, and the complete CSV can be downloaded.
+2. **Fit a candidate:** estimate the 4 x 3 gain matrix, one time constant per
+   CV, one shared integer delay, and dataset nominal values from the estimation
+   period. Fit does not change the active controller.
+3. **Validate:** free-run the candidate over separate estimation and validation
+   periods. Measured-versus-predicted overlays and RMSE, MAE, fit percentage,
+   and derivative-fit RMSE keep regression error distinct from output-response
+   error. Basic diagnostics flag weak or dependent MV excitation and weak CV
+   response.
+4. **Apply deliberately:** only a validated candidate can be applied, and only
+   while the process is in HOLD. Applying changes the MPC predictor, never the
+   synthetic plant. The active model source and revision remain visible, and
+   the complete built-in predictor can be restored.
+5. **Tune and compare:** change the target-controlled CV, scalar tracking
+   weight, scalar MV move penalty, and prediction horizon. Save two presets and
+   run a deterministic offline Tank C comparison using identical initial state,
+   model, noise seed, constraints, and disturbance.
+
+The comparison reports recovery time, target-CV integrated absolute error,
+normalized CV error, maximum constraint violation, violation count, and total
+normalized MV movement. It is intentionally an educational A/B exercise, not
+an automatic tuner. Return to APC Station to operate the active model and
+tuning, then finish with the existing Showcase after a normal RESET.
+
+#### Commissioning Quick Start
+
+1. Press **RESET**, select **Commissioning Lab**, and choose the scan duration
+   and sensor-noise setting in the sidebar. A five-minute scan completes the
+   guided experiment fastest; the selected duration becomes the dataset sample
+   time.
+2. Press **PREPARE GUIDED EXPERIMENT**. This creates the deterministic step
+   sequence and clears earlier Commissioning Lab samples, but does not start
+   the process.
+3. Press **START / RESUME COLLECTION**. The normal simulation runs in Manual
+   mode and moves one MV at a time. Use sidebar **HOLD** to pause and **RUN** or
+   **START / RESUME COLLECTION** to continue. Follow the **NEXT ACTION** message
+   and phase counter.
+4. After both data periods finish, press **FIT CANDIDATE MODEL**. The maximum
+   dead-time setting limits how far the fitter searches; fitting does not
+   activate the result.
+5. Press **VALIDATE CANDIDATE** to compare free-run predictions with measured
+   estimation and validation data. Review the metrics and response overlays,
+   then press **APPLY TO MPC** to activate the predictor. **RESTORE BUILT-IN**
+   returns every predictor parameter to its original value.
+6. Choose a target-controlled CV and adjust the tracking weight, move penalty,
+   and prediction horizon. **APPLY TUNING TO MPC** changes the live controller;
+   **SAVE AS TUNING A/B** only stores comparison presets.
+7. Press **RUN FAIR A/B COMPARISON**. This runs both presets offline against the
+   same Tank C disturbance and does not advance or modify the live process.
+
+Higher tracking weight generally produces stronger target correction. Higher
+move penalty favours smoother, slower MV commands. A longer prediction horizon
+looks further ahead but requires more optimization work. For the comparison,
+lower recovery time and error are preferable, zero constraint violations is
+the goal, and normalized MV movement shows the actuator cost of faster control.
+
 ### Guided APC Showcase
 
 Press **RUN APC SHOWCASE** in the operator station for one deterministic,
@@ -121,6 +191,7 @@ through the simulated process response.
 | `apc_lab/live_dryer.py` | Multivariable process simulation and constrained MPC. |
 | `apc_lab/equations.py` | Display-ready model and controller equations. |
 | `apc_lab/model_fitting.py` | Multivariable gain, time-constant, and delay fitting. |
+| `apc_lab/commissioning.py` | Guided experiment, validation, model lifecycle, and tuning comparison logic. |
 | `apc_lab/psychrometrics.py` | Moist-air references and configured stickiness assessment. |
 | `apc_lab/process_trends_component.py` | Persistent Process Trends wrapper and payload logic. |
 | `apc_lab/operating_map_component.py` | Persistent operating-map wrapper and payload logic. |
@@ -141,8 +212,11 @@ y_measured[k] = y_true[k] + sensor_noise[k]
 ```
 
 The true plant, noisy measurements, and MPC predictor are separate. Fitting a
-dataset updates the controller predictor and does not replace the simulated
-plant.
+dataset creates a candidate; explicit validation and application are required
+before it updates the controller predictor. The simulated plant is never
+replaced. Predictor dead time is stored in physical minutes and converted to
+the appropriate number of scans when the 1, 2, or 5 minute scan duration
+changes.
 
 ## Installation
 
@@ -191,10 +265,12 @@ python -m pip check
 
 The tests use fixed seeds and generated process data for reproducibility.
 
-## Model Fitting Data
+## Commissioning Data
 
-The dashboard accepts evenly sampled, time-ordered CSV data with these exact
-columns:
+The guided experiment records simulation minute, sample duration, estimation
+or validation period, experiment phase, and the seven signals below. The
+Commissioning Lab also accepts legacy evenly sampled, time-ordered CSV data
+with these seven exact signal columns:
 
 ```text
 Feed flow
@@ -206,9 +282,12 @@ Powder moisture
 Exhaust air humidity
 ```
 
-An example identification dataset can be downloaded from the app. Uploaded
-data remains in the active Streamlit session and is not written to the
-repository.
+For legacy uploads, enter the sample duration explicitly and choose a
+chronological estimation fraction. Guided data already contains separate
+Estimation and Validation labels. Uploaded data and fitted candidates remain in
+the active Streamlit session and are not written to the repository. Use HOLD
+for fitting, validation, model application, restoration, and live tuning
+changes.
 
 ## Limitations
 
@@ -221,8 +300,12 @@ repository.
 - The operating map uses approximate moist-air relationships and one configured
   example boundary that is not validated for a product or production dryer.
 - The MPC supports one primary objective at a time.
-- Dataset fitting assumes clean, numeric, evenly sampled data and does not
-  calculate statistical confidence.
+- The first tuning exercise uses one scalar CV tracking weight and one scalar
+  MV move penalty. It does not provide per-CV or per-MV weights, and the control
+  horizon remains fixed.
+- Dataset fitting assumes clean, numeric, evenly sampled data; it uses one time
+  constant per CV and one shared delay, and does not calculate statistical
+  confidence.
 
 ## License
 

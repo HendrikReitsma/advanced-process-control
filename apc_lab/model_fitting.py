@@ -14,6 +14,16 @@ class FittedDryerModel:
     samples: int
     nominal_inputs: np.ndarray
     nominal_outputs: np.ndarray
+    sample_minutes: float = 1.0
+    dead_time_minutes: float | None = None
+
+    @property
+    def delay_minutes(self) -> float:
+        """Return the fitted dead time in physical simulation minutes."""
+
+        if self.dead_time_minutes is not None:
+            return float(self.dead_time_minutes)
+        return float(self.delay_steps * self.sample_minutes)
 
 
 def fit_dynamic_model(
@@ -79,9 +89,57 @@ def fit_dynamic_model(
                 len(inputs),
                 nominal_inputs,
                 nominal_outputs,
+                float(dt),
             )
     assert best is not None
     return best
+
+
+def simulate_dynamic_model(
+    model: FittedDryerModel,
+    inputs: np.ndarray,
+    initial_outputs: np.ndarray,
+    dt: float | None = None,
+) -> np.ndarray:
+    """Free-run a fitted first-order model over an input sequence.
+
+    Predicted outputs are propagated from prior predictions, rather than being
+    corrected with measured outputs at every sample. This makes the result
+    suitable for independent validation overlays and output-response metrics.
+    """
+
+    inputs = np.asarray(inputs, dtype=float)
+    initial_outputs = np.asarray(initial_outputs, dtype=float)
+    if inputs.ndim != 2 or inputs.shape[1] != 3:
+        raise ValueError(f"inputs must have 3 columns: {INPUT_NAMES}")
+    if initial_outputs.shape != (4,):
+        raise ValueError(f"initial_outputs must have 4 values: {OUTPUT_NAMES}")
+    if not np.all(np.isfinite(inputs)) or not np.all(np.isfinite(initial_outputs)):
+        raise ValueError("simulation inputs contain missing or non-numeric values")
+    sample_minutes = model.sample_minutes if dt is None else float(dt)
+    if sample_minutes <= 0:
+        raise ValueError("sample time must be positive")
+
+    delay_steps = max(0, int(np.ceil(model.delay_minutes / sample_minutes)))
+    predictions = np.empty((len(inputs), 4), dtype=float)
+    if len(inputs) == 0:
+        return predictions
+    predictions[0] = initial_outputs
+    response_fraction = 1.0 - np.exp(-sample_minutes / model.output_tau)
+    for sample_index in range(1, len(inputs)):
+        delayed_index = sample_index - delay_steps
+        delayed_inputs = (
+            model.nominal_inputs
+            if delayed_index < 0
+            else inputs[delayed_index]
+        )
+        steady_prediction = model.nominal_outputs + model.gain_matrix @ (
+            delayed_inputs - model.nominal_inputs
+        )
+        predictions[sample_index] = predictions[sample_index - 1] + response_fraction * (
+            steady_prediction - predictions[sample_index - 1]
+        )
+    return predictions
 
 
 def arrays_from_dataframe(dataframe) -> tuple[np.ndarray, np.ndarray]:

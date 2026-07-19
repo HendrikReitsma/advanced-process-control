@@ -376,6 +376,7 @@ class ConstrainedDryerMPC:
     move_weight: float = 0.12
     gain_matrix: np.ndarray = field(default_factory=lambda: GAIN_MATRIX.copy())
     output_tau: np.ndarray = field(default_factory=lambda: OUTPUT_TAU.copy())
+    delay_minutes: float = 3.0
     delay_steps: int = 3
     dt: float = 1.0
     nominal_inputs: np.ndarray = field(default_factory=lambda: NOMINAL_INPUTS.copy())
@@ -395,7 +396,7 @@ class ConstrainedDryerMPC:
         if minutes <= 0:
             raise ValueError("Simulation time step must be positive")
         self.dt = float(minutes)
-        self.delay_steps = max(1, int(np.ceil(3.0 / self.dt)))
+        self.delay_steps = max(1, int(np.ceil(self.delay_minutes / self.dt)))
 
     def predict(self, outputs: np.ndarray, current_inputs: np.ndarray, moves: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         moves = moves.reshape(self.control_horizon, 3)
